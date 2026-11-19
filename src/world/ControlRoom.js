@@ -98,8 +98,11 @@ export class ControlRoom {
   openSideDoor(duration = 2.4) { return this.ctx.clock.wait(duration); }
   /** 防爆門沿 +Z 滑入牆內；回傳 Promise。 */
   openBlastDoor(duration = 4.5) { return this.ctx.clock.wait(duration); }
-  /** 濃煙（0..1）：從防爆門湧入的煙霧粒子＋提高 scene.fog 密度、轉為黑灰色。 */
+  /** 濃煙（0..1）：從防爆門湧入、翻滾著充滿房間的煙霧粒子，並讓室內燈光被煙吞沒變暗。
+   *  scene.fog 由 states/common.js 統一管理：它會讀取 this.smokeLevel（目前平滑後的值 0..1）把霧轉黑轉濃。 */
   setSmoke(amount, { duration = 4 } = {}) {}
+  /** 目前（平滑後）的濃煙量 0..1 —— 唯讀，供 states/common.js 調整 scene.fog。 */
+  get smokeLevel() { return 0; }
   /** 'monitor'（主 CRT 上那張）/ 'ending'（桌上那張＋筆）可見性 */
   setNoteVisible(which, on) {}
   /** 終幕寫字：0..1，同步更新 endingNote 的貼圖與筆的位置。 */
