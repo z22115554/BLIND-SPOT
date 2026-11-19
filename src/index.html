@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>盲區交接 BLIND SPOT</title>
+<meta name="description" content="第一人稱程式化 WebGL 心理恐怖遊戲。零跳臉、純氣氛恐怖。">
+<style>
+  :root { --bg: #000; --fg: #d9d4c7; --dim: #8a857a; --accent: #d8b04a; --alert: #b3362c; color-scheme: dark; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #000; --fg: #d9d4c7; --dim: #8a857a; --accent: #d8b04a; --alert: #b3362c; } }
+  :root[data-theme="dark"] { --bg: #000; --fg: #d9d4c7; --dim: #8a857a; --accent: #d8b04a; --alert: #b3362c; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg); }
+  #app, #game-canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #ui-root { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+  #boot-msg { position: fixed; inset: 0; display: grid; place-items: center; font: 14px sans-serif; color: var(--dim); }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="ui-root"></div>
+<noscript><p style="color:#ccc;padding:2em">本遊戲需要啟用 JavaScript。</p></noscript>
+<script>/*__BUNDLE__*/</script>
+</body>
+</html>
