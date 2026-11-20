@@ -426,21 +426,21 @@ uniform float uBrightness;
 uniform float uSnow;       // 0 = 文字畫面，1 = 訊號中斷的雪花（低對比、平均亮度與文字畫面相近；由 SideScreen 平滑過渡）
 varying vec2 vUv;
 ${commonGLSL}
-// 終端機的雪花：與主 CRT 的 STATIC 同一種低對比雜訊，但更暗（平均亮度約等於一整頁文字的平均亮度）
+// 終端機的雪花：與主 CRT 的 STATIC 同一種低對比雜訊（平均亮度接近一整頁文字＋標題列的平均亮度）
 vec3 termSnow(vec2 uv) {
   float t = uTime, p;
   if (uReduceFlicker > 0.5) {
     float f = t * 6.0; float fi = floor(f);
     vec2 q = uv * vec2(80.0, 60.0) + vec2(t * 0.7, t * 0.25);
     float n = mix(vnoise(q + fi * 17.0), vnoise(q + (fi + 1.0) * 17.0), fract(f));
-    p = 0.205 + (n - 0.5) * 0.07;
+    p = 0.29 + (n - 0.5) * 0.07;
   } else {
     vec2 cell = floor(uv * vec2(260.0, 196.0));
     float fr = floor(t * 24.0);
     float n = hash12(cell + fr * vec2(23.1, 41.7));
     float n2 = hash12(vec2(floor(cell.x / 5.0), cell.y) + fr * vec2(7.3, 3.9));
     n = mix(n, n2, 0.4);
-    p = 0.205 + (n - 0.5) * 0.16;
+    p = 0.29 + (n - 0.5) * 0.16;
   }
   float by = fract(t / 5.6);
   float dy = uv.y - by; dy -= floor(dy + 0.5);
