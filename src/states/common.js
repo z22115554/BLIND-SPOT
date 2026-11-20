@@ -8,6 +8,8 @@
 //   * playIntercom(state, stageIndex)：對講機語音＋逐段累加字幕（最終字串 = SCRIPT.intercom[i].full）。
 //   * updateAtmosphere(ctx, dt)：唯一擁有 scene.fog 的地方（依相機位置的區域、復電後的陳舊感、濃煙）。
 //   * setClock(ctx, text)：LED 電子鐘＋ctx.flags.clockText。
+//   * paceFlags(ctx)：監看節奏改版的 URL 開關（?pace=0 / ?lock=0 / ?subposes=0 / ?spm= / ?seed= / ?pacelog=1）。
+//   * pushLog(ctx, text)：SYS LOG 動態行（與 SCRIPT.status.logLines 依 HH:MM 合併、保留最後 8 行）。
 // 黃金規則：任何亮度變化 ≥ 0.4 秒、沒有突發巨響；所有劇情計時使用遊戲時間（BaseState.wait/tween）。
 // =============================================================================
 import * as THREE from 'three';
@@ -23,6 +25,31 @@ export function T(fn, label = '') {
 }
 const inState = (ctx, ...names) => names.includes(ctx.fsm?.currentName);
 const toMin = (hhmm) => { const [h, m] = String(hhmm).split(':').map(Number); return h * 60 + m; };
+
+/**
+ * 監看節奏改版（docs/pacing/spec.md §10）的 URL 開關；結果快取在 ctx 上（網址參數不會變）。
+ *   pace      ?pace=0 → 改版前的行為（沒有導演、輕量時鐘、上鎖閘門、敲門、子姿勢）
+ *   lock      ?lock=0 → 沒有 02:00 上鎖閘門（防爆門一開始就鎖著）
+ *   subposes  ?subposes=0 → CAM-03 不使用子姿勢
+ *   spm       ?spm=N → 每分鐘秒數（除錯；DWELL_MIN 等比例縮放）
+ *   seed      ?seed=N → 導演亂數種子
+ *   log       ?pacelog=1 → 每次翻分鐘印一行 [pace]，進入停電時印摘要表
+ */
+export function paceFlags(ctx) {
+  if (ctx._paceFlags) return ctx._paceFlags;
+  const get = (k) => { try { return ctx.params?.get?.(k) ?? null; } catch (e) { return null; } };
+  const num = (k) => { const v = Number(get(k)); return get(k) != null && Number.isFinite(v) && v > 0 ? v : null; };
+  const pace = get('pace') !== '0';
+  ctx._paceFlags = {
+    pace,
+    lock: pace && get('lock') !== '0',
+    subposes: pace && get('subposes') !== '0',
+    spm: num('spm'),
+    seed: num('seed'),
+    log: get('pacelog') === '1',
+  };
+  return ctx._paceFlags;
+}
 
 // 環境音層的標準值（可調）
 export const AMB = {
@@ -51,6 +78,7 @@ export function points(ctx) {
     note: V(L.endingNote.x, L.endingNote.y, L.endingNote.z + offZ),
     breaker: V(SW.breaker.x, SW.breaker.y, SW.breaker.z),
     fireDoor: V(C.fireDoor.x, C.fireDoor.glass.y, C.fireDoor.z),
+    camButtons: (L.camButtons?.xs || []).map((x) => V(x, L.camButtons.y, L.camButtons.z)),   // CAM-01..04（vmdTone 聲源）
   };
   return ctx._statePoints;
 }
@@ -140,22 +168,45 @@ export function logLinesUpTo(ctx, clockText) {
   const now = toMin(clockText || '02:00');
   return ctx.SCRIPT.status.logLines.filter((l) => toMin(l.slice(0, 5)) <= now);
 }
+const LOG_KEEP = 8;   // SYS LOG 只顯示最後 8 行
+/**
+ * 左螢幕 SYS LOG：靜態行（logLines 中 ≤ clockText 的行）與動態行（flags.logExtra，pushLog 加入）依 HH:MM 穩定排序合併
+ * （同一分鐘：靜態行在前，動態行依加入順序），保留最後 8 行。內容沒變就不重畫。
+ */
 export function setLeftLog(ctx, clockText = ctx.flags.clockText, tone = 'normal') {
   const S = ctx.SCRIPT.status;
-  const lines = logLinesUpTo(ctx, clockText);
-  const key = `${lines.length}|${tone}`;
-  if (ctx.flags._leftKey === key) return;
-  ctx.flags._leftKey = key;
+  const f = ctx.flags;
+  const items = logLinesUpTo(ctx, clockText).map((l, i) => ({ l, k: toMin(l.slice(0, 5)), o: 0, i }));
+  (Array.isArray(f.logExtra) ? f.logExtra : []).forEach((l, i) => items.push({ l, k: toMin(l.slice(0, 5)), o: 1, i }));
+  items.sort((a, b) => a.k - b.k || a.o - b.o || a.i - b.i);
+  const lines = items.slice(-LOG_KEEP).map((x) => x.l);
+  f._leftClock = clockText;
+  f._leftTone = tone;
+  const key = `${tone}|${lines.join('\n')}`;
+  if (f._leftKey === key) return;
+  f._leftKey = key;
   T(() => ctx.feeds?.setStatus?.('left', { title: S.leftTitle, lines, tone }), 'setStatus');
+}
+/** SYS LOG 加一行動態紀錄（text 以 'HH:MM ' 開頭）並立刻重畫（沿用目前的時鐘與色調）。 */
+export function pushLog(ctx, text) {
+  const f = ctx.flags;
+  if (!text) return;
+  if (!Array.isArray(f.logExtra)) f.logExtra = [];
+  f.logExtra.push(String(text));
+  setLeftLog(ctx, f._leftClock || f.clockText, f._leftTone || 'normal');
 }
 export function setLeftIncident(ctx) {
   const R = ctx.SCRIPT.incidentReport;
   ctx.flags._leftKey = 'incident';
   T(() => ctx.feeds?.setStatus?.('left', { title: R.title, lines: R.lines, tone: 'alert' }), 'setStatus');
 }
-/** 右螢幕：key ∈ normal | ventFault | ventDying | blackout | restored */
+/**
+ * 右螢幕：key ∈ normal | normalUnlocked | ventFault | ventDying | blackout | restored
+ * 上鎖閘門開啟時，'normal' 會依防爆門實際狀態顯示（尚未上鎖 → normalUnlocked「防爆門：未鎖定」）。
+ */
 export function setRight(ctx, key, tone = 'normal') {
   const S = ctx.SCRIPT.status;
+  if (key === 'normal' && S.normalUnlocked && !ctx.flags.blastLocked && paceFlags(ctx).lock) key = 'normalUnlocked';
   ctx.flags.rightStatus = key;
   T(() => ctx.feeds?.setStatus?.('right', { title: S.rightTitle, lines: S[key] || S.normal, tone }), 'setStatus');
 }
@@ -414,6 +465,14 @@ export function resetFlags(ctx) {
     objective: null,
     rightStatus: 'normal',
     _leftKey: null,
+    // ---- 監看節奏改版（docs/pacing/spec.md） ----
+    blastLocked: !paceFlags(ctx).lock,   // 上鎖閘門開啟時，序幕/循環開始時防爆門「未鎖定」
+    lockPending: false,                  // 02:00 等待玩家上鎖
+    blastLocking: false,                 // 上鎖動畫進行中
+    doorKnocked: false,                  // 02:05 敲門已發生（防爆門檢視附加「鋼板摸起來是溫的。」）
+    logExtra: [],                        // SYS LOG 動態行（pushLog）
+    minuteK: null,                       // 導演發布的「這一分鐘進行到哪」0..0.999（CameraFeeds 的 OSD 秒數）；null = 舊公式
+    motionHintShown: false,              // 動態偵測的一次性提示
   });
 }
 
@@ -476,6 +535,8 @@ export function resetWorld(ctx, opts = {}) {
   T(() => cr?.setVentLed?.('ok'));
   T(() => cr?.setVentGauge?.(null));
   setBlastDoorFlag(ctx, false);
+  // 上鎖閘門：循環開始時防爆門未上鎖（鎖栓縮回、門燈綠），由玩家在 02:00 親手鎖上；?lock=0 / ?pace=0 時維持鎖定
+  if (paceFlags(ctx).lock) T(() => cr?.setBlastLocked?.(false, { duration: 0 }), 'setBlastLocked');
   setClock(ctx, ctx.CLOCK.start);
   setCoffee(ctx, 0);
 
@@ -486,7 +547,7 @@ export function resetWorld(ctx, opts = {}) {
   T(() => fd?.reset?.(), 'feeds.reset');
   T(() => fd?.setHDAction?.(false));
   setLimits(ctx, 0, 0);
-  if (fd) fd.brightness = 1;
+  if (fd) { fd.brightness = 1; fd.subPoses = paceFlags(ctx).subposes; }
   setLeftLog(ctx, ctx.CLOCK.start, 'normal');
   setRight(ctx, 'normal', 'normal');
 
@@ -506,11 +567,20 @@ export function resetWorld(ctx, opts = {}) {
   snapAtmosphere(ctx);
 }
 
+/** 防爆門瞬間上鎖（跳關/直接進入後期狀態用；畫面全黑中）。 */
+export function lockBlastDoorNow(ctx) {
+  ctx.flags.blastLocked = true;
+  ctx.flags.lockPending = false;
+  ctx.flags.blastLocking = false;
+  T(() => ctx.controlRoom?.setBlastLocked?.(true, { duration: 0 }), 'setBlastLocked');
+}
+
 /** 第一幕末（02:12 之後）的世界：通風已停、聽覺真空、心跳、人影在門前。 */
 function lateMonitoringWorld(ctx) {
   const cr = ctx.controlRoom, fd = ctx.feeds;
   T(() => cr?.setVentLever?.(true));
   T(() => cr?.setVentLed?.('off'));
+  lockBlastDoorNow(ctx);
   ctx.flags.ventCut = true; ctx.flags.ventDying = true; ctx.flags.ventStopped = true; ctx.flags.heartbeat = true;
   setClock(ctx, '02:13');
   T(() => fd?.setFigureIndex?.(7));
@@ -535,6 +605,7 @@ function restoredWorld(ctx) {
   T(() => cr?.takeFlashlight?.());
   T(() => cr?.setVentLever?.(true));
   T(() => cr?.setVentLed?.('off'));
+  lockBlastDoorNow(ctx);
   T(() => co?.setPower?.(true, { duration: 0 }));
   const lever = co?.objects?.breakerLever;
   if (lever) lever.rotation.x = -0.5; // LEVER_ON（已復歸）
@@ -709,7 +780,12 @@ export function registerCommonInteractables(ctx) {
     label: () => S.items.coffee.title, verb: V.inspect,
     onUse: () => {
       const st = clamp(ctx.flags.coffeeStage | 0, 0, 2);
-      openInspect(ctx, { id: 'coffee', title: S.items.coffee.title, body: S.items.coffee.stages[st], object: inspectClone(cr.coffee, true) })
+      let body = S.items.coffee.stages[st];
+      // 【補充文案】T2：02:08 起，咖啡一點都沒有變涼（時間不對勁）
+      if (st === 0 && D.coffeeStill && paceFlags(ctx).pace && inState(ctx, STATES.MONITORING) && toMin(f().clockText || '02:00') >= toMin('02:08')) {
+        body = [...body, D.coffeeStill];
+      }
+      openInspect(ctx, { id: 'coffee', title: S.items.coffee.title, body, object: inspectClone(cr.coffee, true) })
         .then(() => { if (st === 0) T(() => ctx.audio?.sfx?.('mug', { position: cr.coffee.getWorldPosition(new THREE.Vector3()), gain: 0.6 })); });
     },
   });
@@ -720,7 +796,8 @@ export function registerCommonInteractables(ctx) {
     const n = i + 1;
     add({
       id: `cam${n}`, object: btn, distance: 1.7,
-      label: I.camButton(n), verb: V.press,
+      // 該頻道有未查看的動態偵測：提示改為「切換至 CAM-0n（動態偵測）」（色弱玩家也看得出琥珀燈的意思）
+      label: () => (I.camButtonAlert && ctx.feeds?.isAlerted?.(n) ? I.camButtonAlert(n) : I.camButton(n)), verb: V.press,
       enabled: camOk,
       onUse: () => {
         T(() => ctx.feeds.setChannel(n), 'setChannel');
@@ -738,11 +815,24 @@ export function registerCommonInteractables(ctx) {
   });
 
   // ---- 防爆門 ----
+  // 02:00 上鎖閘門（監看中、等待上鎖）：「上鎖　防爆門氣壓閥手輪」→ emit 'blastDoor:lock'（MonitoringState.onLock）。
+  // 其餘時候是檢視：上鎖前「氣壓閥沒有加壓……」；上鎖後原企劃「防爆門已從內部反鎖……」，02:05 敲門後（復電前）附加「鋼板摸起來是溫的。」
+  const lockable = () => inState(ctx, STATES.MONITORING) && !!f().lockPending && !f().blastLocked;
+  const blastDoorBody = () => {
+    if (!f().blastLocked && D.blastDoorUnlocked) return [D.blastDoorUnlocked];
+    const body = [S.prompts.blastDoorLocked];
+    if (f().doorKnocked && !f().powerRestored && D.blastDoorWarm) body.push(D.blastDoorWarm);
+    return body;
+  };
   add({
     id: 'blastDoor', object: cr.blastDoor, distance: 2.6,
-    label: I.blastDoor, verb: V.inspect,
-    enabled: () => !f().endingStarted,
-    onUse: () => openInspect(ctx, { id: 'blastDoor', title: I.blastDoor, body: [S.prompts.blastDoorLocked] }),
+    label: () => (lockable() ? I.blastDoorWheel : I.blastDoor),
+    verb: () => (lockable() ? V.lock : V.inspect),
+    enabled: () => !f().endingStarted && !f().blastLocking,
+    onUse: () => {
+      if (lockable()) emit('blastDoor:lock', {});
+      else openInspect(ctx, { id: 'blastDoor', title: I.blastDoor, body: blastDoorBody() });
+    },
   });
 
   // ---- 緊急對講機 ----

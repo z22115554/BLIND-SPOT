@@ -309,6 +309,34 @@ export function simulate(personaName = 'typical', seed = 1, o = {}) {
 const pc = (a, q) => { const b = [...a].sort((x, y) => x - y); return b[Math.floor(q * (b.length - 1))]; };
 const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
 
+// 導演的其他路徑（?clock= 跳關、除錯 fire / forceFlip / dump）：快速自我檢查
+function selfTest(assert) {
+  const logs = [], applied = [];
+  const sense = () => ({ held: false, inspectOpen: false, ventStopped: false, clockText: '02:09', channel: 3, shownChannel: 3,
+    observed: (n) => n === 3, unobserved3: 0, seenSinceMove: true, anyAlert: false, alerted: () => false, playerDoorDist: 4 });
+  const io = {
+    apply: (ch, stage, o) => { applied.push([ch, stage, !!o?.force]); return true; },
+    freeze: (ch, o) => { applied.push([ch, 'freeze', !!o?.force]); return true; },
+    log: (kind, o) => logs.push(`${kind}:${o.hhmm}${o.ch ? `:${o.ch}` : ''}`), knocked: () => logs.push('knocked'),
+    firstStamp: () => SCRIPT.feedUI.firstStamp, clockStamp: () => '02:09:30', raise: (ch, { stamp }) => stamp,
+  };
+  const d = new MonitoringDirector({ sense, io, rng: mulberry32(1) });
+  d.fastForward(9);
+  const want = ['lock:02:00', 'motion:01:58:4', 'motion:02:02:1', 'motion:02:03:4', 'motion:02:06:2', 'motion:02:07:4', 'motion:02:08:2', 'vent:02:05', 'knock:02:05', 'knocked'];
+  assert(JSON.stringify(logs) === JSON.stringify(want), `fastForward(9) logs ${JSON.stringify(logs)}`);
+  assert(applied.every((a) => a[2]) && applied.length === 6, `fastForward(9) applies ${JSON.stringify(applied)}`);
+  assert(d.knock.state === 'done' && d.fired.size === 6, 'fastForward(9) state');
+  d.onMinute(9, 0); d.onBeatDone(9, 0);
+  assert(d.canFlip(1) === false, 'canFlip right after the flip');
+  d.forceFlip();
+  assert(d.canFlip(1.05) === true, 'forceFlip');
+  assert(d.fire('m1c') === true && d.fired.has('m1c') && d.cues === 1, 'fire(m1c)');
+  assert(d.dump().fired.includes('m1c'), 'dump');
+  const d2 = new MonitoringDirector({ sense, io: {}, lockGate: false });
+  d2.onMinute(0, 0); d2.onBeatDone(0, 0);
+  assert(d2.holdUntil === -Infinity, 'no POST_HOLD after 02:00 without the lock gate');
+}
+
 function main() {
   const runs = Number(opt('runs', 200));
   const which = opt('persona', 'all');
@@ -324,6 +352,7 @@ function main() {
   const strict = !simOpts.spm && simOpts.early && simOpts.lock && !tuned;   // 只有預設設定才套用長度斷言
   const failures = [];
   const assert = (ok, msg) => { if (!ok) failures.push(msg); };
+  selfTest(assert);
   console.log(`pacing-sim: ${runs} runs/persona · DT ${DT}s · SPM ${simOpts.spm || PACE.SPM} · DWELL_MIN ${pace.DWELL_MIN} · CALM ${pace.CALM} · MIN_GAP ${pace.MIN_GAP}${pace.RUSH_IN_DWELL ? '' : ' · literal rush (after DWELL_MIN)'}` +
     ` · lock ${simOpts.lock ? 'on' : 'off'} · early ${simOpts.early ? 'on' : 'off'} · subposes ${simOpts.subposes ? 'on' : 'off'}`);
   console.log('persona   act p10 / p50 / p90   | max idle p50 / p90 / max | longest no-new-event (excl. 02:12 vacuum) p50 / p90 / max | cued p50 [min–max] | CAM-03 alarms max | sub-poses p50 | knock in 02:05 | fig@end');
