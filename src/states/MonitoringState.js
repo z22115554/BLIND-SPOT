@@ -145,7 +145,8 @@ export class MonitoringState extends StoryState {
     setObjective(ctx, 'lockDoor');
     this.plog('gate', { id: 'lock' });
     // nag() 只有一個 token：上鎖閘門結束前不會有其他 nag 開始
-    this.nag(() => f.lockPending, ctx.SCRIPT.hints.lockDoor, 20, 30);
+    // 已經在轉手輪（blastLocking）就不再提示（整合時發現：20 秒的提示會在上鎖動畫途中跳出來）
+    this.nag(() => f.lockPending && !f.blastLocking, ctx.SCRIPT.hints.lockDoor, 20, 30);
     await this.until(() => f.blastLocked);
     setObjective(ctx, 'monitor');
   }
