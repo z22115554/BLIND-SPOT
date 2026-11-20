@@ -93,7 +93,11 @@ html.bs-touch .bs-insp__panel { right: calc(max(2em, 5vw) + env(safe-area-inset-
 @media (max-width: 760px), (max-aspect-ratio: 1/1) {
   html.bs-touch .bs-insp__panel, html.bs-touch .bs-insp.is-solo .bs-insp__panel { right: 0; padding-bottom: env(safe-area-inset-bottom, 0px); }
 }
-@media (max-height: 520px) {
+/* 矮的橫向手機：底部抽屜高一點（多看幾行）；側邊面板模式則幾乎用滿整個高度 */
+@media (max-width: 760px) and (min-aspect-ratio: 1/1) {
+  html.bs-touch .bs-insp__panel, html.bs-touch .bs-insp.is-solo .bs-insp__panel { max-height: 64vh; }
+}
+@media (max-height: 520px) and (min-width: 761px) and (min-aspect-ratio: 1/1) {
   html.bs-touch .bs-insp__panel { max-height: calc(100vh - 2.4em); }
 }
 
