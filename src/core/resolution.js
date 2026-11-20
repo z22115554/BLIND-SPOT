@@ -6,6 +6,7 @@
 //   會讓下一次升階的冷卻時間加倍，避免畫面忽清忽糊。超過 0.25 秒的單幀（分頁切換、shader 編譯）不列入統計。
 // * ?pr=<數字> 固定像素比（關閉自動調整）；?adaptive=0 關閉自動調整；自動化測試（navigator.webdriver）不調整，
 //   讓截圖解析度固定。
+// * 可選參數 { cap, slowDt, fastDt }（ctx.quality 的手機預設：像素比上限 1.25、較寬鬆的降階門檻）；省略＝桌機原值。
 // =============================================================================
 export const PIXEL_RATIO_CAP = 1.5;
 const STEPS = [1, 0.85, 0.72, 0.6];
@@ -13,13 +14,15 @@ const SLOW_DT = 0.0215, FAST_DT = 0.0185;
 const SLOW_HOLD = 3, FAST_HOLD = 10;
 
 export class ResolutionGovernor {
-  constructor({ params = null } = {}) {
+  constructor({ params = null, cap = PIXEL_RATIO_CAP, slowDt = SLOW_DT, fastDt = FAST_DT } = {}) {
     const forced = Number(params?.get?.('pr'));
     this.forced = Number.isFinite(forced) && forced > 0 ? Math.min(3, Math.max(0.25, forced)) : null;
     let webdriver = false;
     try { webdriver = !!navigator.webdriver; } catch (e) { /* ignore */ }
     this.adaptive = !this.forced && !webdriver && params?.get?.('adaptive') !== '0';
-    this.cap = PIXEL_RATIO_CAP;
+    this.cap = cap;
+    this.slowDt = slowDt;
+    this.fastDt = fastDt;
     this.level = 0;
     this.avgDt = 1 / 60;
     this.onApply = null;      // main.js：重新套用 renderer / composer 尺寸
@@ -50,8 +53,8 @@ export class ResolutionGovernor {
     this._cool -= realDt;
     this._upBlock -= realDt;
     this._sinceUp += realDt;
-    if (this.avgDt > SLOW_DT) { this._slow += realDt; this._fast = 0; }
-    else if (this.avgDt < FAST_DT) { this._fast += realDt; this._slow = 0; }
+    if (this.avgDt > this.slowDt) { this._slow += realDt; this._fast = 0; }
+    else if (this.avgDt < this.fastDt) { this._fast += realDt; this._slow = 0; }
     else { this._slow = Math.max(0, this._slow - realDt); this._fast = Math.max(0, this._fast - realDt); }
 
     if (this._slow >= SLOW_HOLD && this._cool <= 0 && this.level < STEPS.length - 1) {

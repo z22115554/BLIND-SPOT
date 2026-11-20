@@ -14,6 +14,9 @@
 // * 0.25 秒防連點；InspectView 關閉後 / 暫停恢復後 0.3 秒內忽略輸入（同一次點擊不會立刻再觸發）。
 // * 目標邊緣有 0.12 秒的保留時間，避免準心落在物件邊緣時提示忽隱忽現。
 // * 額外成員：currentItem、currentHit { distance, point }、isBlocked()
+// * 觸控（TouchControls）：tapAt(clientX, clientY) 從點擊位置發射射線（含 ±12／24 px 的容錯環），
+//   命中可互動物件（距離 ≤ 該物件的互動距離；目前的準心目標再放寬 0.5 m）就觸發；useCurrent() 觸發準心目標
+//   （底部提示按鈕）。兩者都走同一套防連點／阻擋規則。
 // =============================================================================
 import * as THREE from 'three';
 import { raycastTree, sortHits, visibleInHierarchy, attachedToScene, roomWallBlocks } from './raycastUtil.js';
@@ -23,6 +26,11 @@ const DEBOUNCE_MS = 250;
 const AFTER_CLOSE_MS = 300;
 const CLICK_SLOP_PX = 5;
 const TARGET_GRACE = 0.12;
+const TAP_SLACK = 0.5;         // 觸控點到「目前的準心目標」時，互動距離放寬（m）
+// 觸控點擊的容錯取樣（CSS px）：先試正中央，再試 12 px 環（6 點）、24 px 環（8 點）
+const TAP_RINGS = [[[0, 0]],
+  Array.from({ length: 6 }, (_, i) => [Math.cos(i * Math.PI / 3) * 12, Math.sin(i * Math.PI / 3) * 12]),
+  Array.from({ length: 8 }, (_, i) => [Math.cos((i + 0.5) * Math.PI / 4) * 24, Math.sin((i + 0.5) * Math.PI / 4) * 24])];
 const isTypingTarget = (el) => !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || ''));
 const val = (v, it) => (typeof v === 'function' ? v(it) : v);
 
@@ -98,21 +106,41 @@ export class Interaction {
     return this.locked || !!ctx.inspect?.isOpen || ctx.player?.enabled === false || !!ctx.clock?.paused;
   }
 
-  _use() {
-    if (this.isBlocked()) return;
+  /** 觸發目前的準心目標（觸控：底部提示按鈕）。@returns {boolean} 是否觸發 */
+  useCurrent() { return this._use(); }
+
+  /** 觸控：在螢幕座標 (clientX, clientY) 點擊。命中可互動物件就觸發。@returns {boolean} */
+  tapAt(clientX, clientY) {
+    if (this.isBlocked()) return false;
+    const W = window.innerWidth || 1, H = window.innerHeight || 1;
+    const ndc = this._tapNdc || (this._tapNdc = new THREE.Vector2());
+    for (const ring of TAP_RINGS) {
+      let best = null;
+      for (const [ox, oy] of ring) {
+        ndc.set(((clientX + ox) / W) * 2 - 1, -((clientY + oy) / H) * 2 + 1);
+        const p = this._pick(ndc, TAP_SLACK);
+        if (p && (!best || p.hit.distance < best.hit.distance)) best = p;
+      }
+      if (best) return this._use(best.item.id);
+    }
+    return false;
+  }
+
+  _use(id = this.current) {
+    if (this.isBlocked()) return false;
     const now = performance.now();
-    if (now < this._ignoreUntil || this._ignoreFrames > 0 || now - this._lastUse < DEBOUNCE_MS) return;
-    const id = this.current;
+    if (now < this._ignoreUntil || this._ignoreFrames > 0 || now - this._lastUse < DEBOUNCE_MS) return false;
     const it = id && this.items.get(id);
-    if (!it) return;
+    if (!it) return false;
     let enabled = true;
     try { enabled = !!val(it.enabled, it); } catch (e) { console.error('[interact] enabled() threw', id, e); enabled = false; }
-    if (!enabled) return;
+    if (!enabled) return false;
     this._lastUse = now;
     try { it.onUse?.(it); } catch (e) { console.error('[interact] onUse threw', id, e); }
     this.ctx.bus.emit('interact:use', { id });
     // onUse 可能開啟了檢視畫面 → 立刻收起提示（準心交給 InspectView）
     if (this.ctx.inspect?.isOpen) this._clearForInspect();
+    return true;
   }
 
   // ---------------------------------------------------------------------------
@@ -149,13 +177,15 @@ export class Interaction {
     return !!this._label(it) && !!it.object && visibleInHierarchy(it.object, !!it.object.userData?.hitbox);
   }
 
-  _pick() {
+  /** ndc：射線方向（預設＝畫面中央準心）；slack：目前目標的互動距離放寬量（觸控點擊用）。 */
+  _pick(ndc = CENTER, slack = 0) {
     const ctx = this.ctx;
     const cam = ctx.camera;
     if (!cam || this.items.size === 0) return null;
     cam.updateMatrixWorld();
     const rc = this.raycaster;
-    rc.setFromCamera(CENTER, cam);
+    rc.setFromCamera(ndc, cam);
+    const reach = (it) => (Number.isFinite(it.distance) ? it.distance : 2.3) + (slack && it.id === this.current ? slack : 0);
     const hits = this._hits; hits.length = 0;
     for (const it of this.items.values()) {
       const obj = it.object;
@@ -164,7 +194,7 @@ export class Interaction {
       try { enabled = val(it.enabled, it); } catch (e) { enabled = false; }
       if (!enabled) continue;
       if (!attachedToScene(obj) || !visibleInHierarchy(obj, !!obj.userData?.hitbox)) continue;
-      const dist = Number.isFinite(it.distance) ? it.distance : 2.3;
+      const dist = reach(it);
       rc.near = 0; rc.far = Math.min(12, dist + 0.01);
       const start = hits.length;
       try { raycastTree(rc, obj, hits, 'target'); } catch (e) { console.warn('[interact] raycast failed', it.id, e); hits.length = start; }
@@ -174,7 +204,7 @@ export class Interaction {
     sortHits(hits);
     for (const h of hits) {
       const it = h.item;
-      if (h.distance > (Number.isFinite(it.distance) ? it.distance : 2.3)) continue;
+      if (h.distance > reach(it)) continue;
       const label = this._label(it);
       if (!label) continue;
       // 結構性遮蔽：隔著主控室牆面不可互動

@@ -22,6 +22,8 @@
 //   * 長文（日誌）超出面板高度時：底部淡出遮罩＋「滾輪捲動」提示，捲到底後消失；方向鍵/PageUp/PageDown 也能捲動。
 //     矮視窗（高度 ≤ 620px）收緊字級與行距。
 //   * 咖啡：以俯角檢視（看得到杯中的液面／浮灰／乾涸的焦痕），依 flags.coffeeStage 調整俯角。
+//   * 觸控（html.bs-touch）：面板右上角 ✕ 關閉鈕（樣式在 TouchControls；桌機不顯示）、內文以手指捲動、
+//     頁尾提示改用 SCRIPT.touch.hints；在面板外點一下 = 關閉、拖曳 = 旋轉物件（TouchControls 呼叫 nudge()）。
 // =============================================================================
 import * as THREE from 'three';
 import { FONTS, makeCanvas, makeNoise, fbm, speckle } from '../gfx/canvasUtil.js';
@@ -58,6 +60,7 @@ const CSS = `
   box-shadow: 0 1.6em 4.5em rgba(0, 0, 0, 0.75), inset 0 0 4.5em rgba(24, 12, 4, 0.85), inset 0 0 1.1em rgba(0, 0, 0, 0.85); }
 
 .bs-insp__head { flex: none; padding: 1.7em 2.2em 1.05em; border-bottom: 1px solid var(--bs-rule); }
+.bs-insp__x { display: none; }   /* 觸控關閉鈕：只在 html.bs-touch 顯示（樣式見 TouchControls） */
 .bs-insp__title { margin: 0; font-family: var(--bs-serif); font-weight: 600; font-size: 1.42em; line-height: 1.45;
   letter-spacing: 0.2em; color: #ebe5d6; }
 .bs-insp__body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 1.35em 2.2em 0.4em;
@@ -189,7 +192,12 @@ export class InspectView {
     this.panel.setAttribute('aria-modal', 'false');
     const head = el('header', 'bs-insp__head');
     this.titleEl = el('h2', 'bs-insp__title');
-    head.append(this.titleEl);
+    // 觸控用關閉鈕（只在 html.bs-touch 時顯示）
+    this.closeBtn = el('button', 'bs-insp__x', '✕');
+    this.closeBtn.type = 'button';
+    this.closeBtn.setAttribute('aria-label', ctx.SCRIPT?.touch?.close || '');
+    this.closeBtn.addEventListener('click', (e) => { e.preventDefault(); this._requestClose(e); });
+    head.append(this.titleEl, this.closeBtn);
     this.bodyEl = el('div', 'bs-insp__body');
     this.footEl = el('footer', 'bs-insp__foot');
     this.closeHintEl = el('span', 'bs-insp__close');
@@ -221,6 +229,8 @@ export class InspectView {
       if (!this.isOpen) return;
       // 左鍵落在閱讀面板上（選取文字、拖曳捲動條；拖曳環顧模式下游標看得見）→ 不關閉。右鍵任何地方都關閉。
       if (e.button === 0 && this.panel.contains(e.target)) return;
+      // 觸控介面元件（暫停鈕等；可能收到觸控後補發的相容滑鼠事件）不算「點擊面板外」
+      if (e.target?.closest?.('.bs-tc')) return;
       if (e.button === 0 || e.button === 2) this._requestClose(e);
     });
     window.addEventListener('contextmenu', (e) => { if (this.isOpen || this.opacity > 0) e.preventDefault(); });
@@ -229,10 +239,7 @@ export class InspectView {
       if (!this.isOpen || !this.object) return;
       const mx = Number(e.movementX) || 0, my = Number(e.movementY) || 0;
       if (Math.abs(mx) > 300 || Math.abs(my) > 300) return; // 部分瀏覽器鎖定瞬間的異常跳動
-      const r = this._rot;
-      r.tYaw += mx * 0.0055;
-      r.tPitch = Math.max(-1.0, Math.min(1.0, r.tPitch + my * 0.0045));
-      r.idle = 0;
+      this.nudge(mx, my);
     });
     // 滾輪：捲動長文（指標鎖定時游標不在面板上，所以全域處理）
     window.addEventListener('wheel', (e) => {
@@ -241,6 +248,24 @@ export class InspectView {
       this.bodyEl.scrollTop += e.deltaY * k;
     }, { passive: true });
     window.addEventListener('resize', () => { if (this.opacity > 0 || this.isOpen) { this._layout(); this._updateScrollCue(); } });
+  }
+
+  /** 旋轉檢視物件（像素位移；滑鼠移動與觸控拖曳共用）。 */
+  nudge(mx, my) {
+    if (!this.isOpen || !this.object) return;
+    const r = this._rot;
+    r.tYaw += mx * 0.0055;
+    r.tPitch = Math.max(-1.0, Math.min(1.0, r.tPitch + my * 0.0045));
+    r.idle = 0;
+  }
+
+  /** 頁尾提示文字（觸控模式用 SCRIPT.touch.hints；輸入方式切換時 TouchControls 會再呼叫一次）。 */
+  syncHints() {
+    const H = this.ctx.SCRIPT?.hints || {};
+    const TH = (this.ctx.input?.touch && this.ctx.SCRIPT?.touch?.hints) || {};
+    this.closeHintEl.textContent = TH.closeInspect || H.closeInspect || '';
+    this.scrollHintEl.textContent = TH.scrollInspect || H.scrollInspect || '';
+    this.footEl.hidden = !this.closeHintEl.textContent;
   }
 
   /** @param {{ id?: string, title: string, body: string[], object?: import('three').Object3D, scale?: number, onClose?: Function }} o
@@ -263,9 +288,7 @@ export class InspectView {
       this.bodyEl.append(p);
     }
     this.bodyEl.scrollTop = 0;
-    this.closeHintEl.textContent = this.ctx.SCRIPT?.hints?.closeInspect || '';
-    this.scrollHintEl.textContent = this.ctx.SCRIPT?.hints?.scrollInspect || '';
-    this.footEl.hidden = !this.closeHintEl.textContent;
+    this.syncHints();
 
     // ---- 3D ----
     this._setObject(o.object || null, Number(o.scale) || 1);

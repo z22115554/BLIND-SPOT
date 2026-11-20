@@ -9,6 +9,8 @@
 // ?autostart=1（測試/開發）：同步開機（load 事件之後遊戲就緒，自動化測試的時間基準不變）。
 // 主迴圈：每一步都包在 try/catch 裡，單一模組一次例外不會讓整個迴圈停擺（每個步驟只記錄一次錯誤）。
 // 解析度：像素比上限 1.5；畫面持續過慢時自動降一階（之後夠快再升回），變更間隔至少數秒，避免忽大忽小。
+// 手機／平板（core/quality.js）：ctx.quality 保守預設（像素比上限 1.25 等）；觸控操作見 systems/TouchControls.js，
+// 輸入方式（觸控 ↔ 滑鼠鍵盤）見 core/input.js。桌機的畫質與操作完全不變。
 // =============================================================================
 import * as THREE from 'three';
 import { EventBus } from './core/EventBus.js';
@@ -33,6 +35,9 @@ import { GazeSystem } from './systems/GazeSystem.js';
 import { InspectView } from './systems/InspectView.js';
 import { registerStates } from './states/index.js';
 import { ResolutionGovernor } from './core/resolution.js';
+import { InputMode } from './core/input.js';
+import { detectQuality, applyQuality, rendererQuality } from './core/quality.js';
+import { TouchControls } from './systems/TouchControls.js';
 
 // 讓出一幀：rAF 之後再排一個 macrotask——下一段工作在這一幀「畫完之後」才開始（只等 rAF 的話，
 // 接續的工作會在同一幀的繪製之前執行，載入訊息要等到下一段工作做完才畫得出來）。
@@ -59,7 +64,10 @@ async function boot() {
     document.body.innerHTML = '<p style="color:#ccc;font:16px sans-serif;padding:2em">此瀏覽器無法啟用 WebGL，請改用最新版 Chrome / Edge / Firefox / Safari。</p>';
     throw err;
   }
-  const res = new ResolutionGovernor({ params });
+  const quality = detectQuality(params);
+  const res = new ResolutionGovernor(quality.tier === 'mobile'
+    ? { params, cap: quality.pixelRatioCap, slowDt: quality.governor.slowDt, fastDt: quality.governor.fastDt }
+    : { params });
   renderer.setPixelRatio(res.pixelRatio());
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -67,6 +75,7 @@ async function boot() {
   renderer.toneMappingExposure = 1.0;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  rendererQuality(renderer, quality);   // 手機：較便宜的陰影濾波（桌機不變）
   renderer.domElement.id = 'game-canvas';
   document.getElementById('app').appendChild(renderer.domElement);
 
@@ -100,6 +109,8 @@ async function boot() {
   };
   ctx.flags.loopCount = ctx.settings.get('loopCount') || 0;
   ctx.resolution = res;
+  ctx.quality = quality;
+  ctx.input = new InputMode(ctx);   // 觸控 ↔ 滑鼠鍵盤（UI 建構前就要知道）
   window.addEventListener('error', (e) => console.error('[uncaught]', e.message));
 
   // ---- 模組（順序 = 依賴順序；分段建構，段與段之間讓出一幀）-------------------------
@@ -119,13 +130,16 @@ async function boot() {
   ctx.interact = new Interaction(ctx);
   ctx.gaze = new GazeSystem(ctx);
   ctx.inspect = new InspectView(ctx);
+  ctx.touchControls = new TouchControls(ctx);
   ctx.fsm = new StateMachine(ctx);
 
   const modules = [ctx.textures, ctx.audio, ctx.ui, ctx.subtitles, ctx.postfx, ctx.controlRoom, ctx.corridor,
-    ctx.feeds, ctx.player, ctx.interact, ctx.gaze, ctx.inspect];
+    ctx.feeds, ctx.player, ctx.interact, ctx.gaze, ctx.inspect, ctx.touchControls];
   for (const m of modules) { try { m.init?.(); } catch (e) { console.error('[boot] init failed', m?.constructor?.name, e); } }
 
   registerStates(ctx);
+  // 手機畫質預設：建構後的調整（監視器 render target、粒子上限…）必須在預先編譯之前
+  try { applyQuality(ctx); } catch (e) { console.warn('[boot] applyQuality failed', e); }
 
   // ---- Shader 預先編譯 ----------------------------------------------------------
   // renderer.compile 會走訪整個場景（包含目前隱藏的廊道/電閘室/焦黑與腐化層/濃煙粒子），以「目前的燈光組合」
@@ -139,7 +153,9 @@ async function boot() {
   // ---- 視窗與暫停 ---------------------------------------------------------------
   const applySize = () => {
     const w = window.innerWidth, h = window.innerHeight;
-    camera.aspect = w / h; camera.updateProjectionMatrix();
+    camera.aspect = w / h;
+    camera.fov = ctx.touchControls?.fovFor?.(w, h) ?? camera.fov;   // 觸控直向：放寬垂直視角（桌機不變）
+    camera.updateProjectionMatrix();
     // 瀏覽器縮放 / 換到不同 DPI 的螢幕：重新套用像素比
     renderer.setPixelRatio(res.pixelRatio());
     renderer.setSize(w, h);
@@ -148,10 +164,14 @@ async function boot() {
   };
   const onResize = () => { const s = applySize(); ctx.bus.emit('resize', s); };
   window.addEventListener('resize', onResize);
+  // 旋轉螢幕：部分行動瀏覽器的 resize 早於最終尺寸；稍後再套用一次。輸入方式切換會改變直向的視角。
+  window.addEventListener('orientationchange', () => setTimeout(onResize, 300));
+  ctx.bus.on('input:mode', onResize);
   // 載入期間視窗大小或 DPR 變了（那時還沒有 resize 監聽）：補套用一次
   {
     const cur = renderer.getSize(new THREE.Vector2());
-    if (cur.x !== window.innerWidth || cur.y !== window.innerHeight || renderer.getPixelRatio() !== res.pixelRatio()) onResize();
+    if (cur.x !== window.innerWidth || cur.y !== window.innerHeight || renderer.getPixelRatio() !== res.pixelRatio()
+      || camera.fov !== (ctx.touchControls?.fovFor?.(window.innerWidth, window.innerHeight) ?? camera.fov)) onResize();
   }
   // devicePixelRatio 改變但 CSS 尺寸沒變（拖到另一台螢幕）不會觸發 resize：監聽 resolution media query
   const watchDpr = () => {
@@ -220,6 +240,7 @@ async function boot() {
     const dt = ctx.clock.dt, t = ctx.clock.time;
 
     step('fsm', () => ctx.fsm.update(dt, t));
+    step('touch', () => ctx.touchControls.update(dt, t));
     step('player', () => ctx.player.update(dt, t));
     step('interact', () => ctx.interact.update(dt, t));
     step('gaze', () => ctx.gaze.update(dt, t));
