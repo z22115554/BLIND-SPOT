@@ -46,28 +46,33 @@ function scaleOpacity(list, k) { for (const s of list) s.material.opacity = s.us
 // =============================================================================
 // CAM-01 北向隧道入口：門架號誌 ↓ → ✕、VMS 濃霧 → 隧道封閉；之後霧轉暗、變濃（煙），近處兩盞琥珀色路障燈
 // =============================================================================
+// 可讀性放大（spec §6.1 的 legibility fallback）：號誌面板與 VMS（連同門架上的外框）以中心為準放大，
+// 位置不變。160×120 的 LD 取樣下，原尺寸的號誌只有約 5 px，↓ / ✕ 分不出來。
+const LEGIBLE = 1.35;
+
 function install01(ch, SCRIPT) {
   const ld = ch.ld;
   const { vmsFog, vmsClosed } = signs(SCRIPT);
+  const L = LEGIBLE;
   // 門架（HD 門架的複製；正常受霧影響 → 霧中一道暗影）
   const gantryM = std({ color: 0x2c2e30, roughness: 0.6, metalness: 0.5 });
   mesh(mergeList([
     boxG(9.6, 0.25, 0.3, 0, 5.1, -10), boxG(0.25, 1.3, 0.25, -4.6, 4.45, -10), boxG(0.25, 1.3, 0.25, 4.6, 4.45, -10),
-    boxG(0.9, 0.9, 0.3, -1.9, 4.45, -10), boxG(0.9, 0.9, 0.3, 1.9, 4.45, -10), boxG(3.0, 0.9, 0.25, 0, 5.75, -10.05),
+    boxG(0.9 * L, 0.9 * L, 0.3, -1.9, 4.45, -10), boxG(0.9 * L, 0.9 * L, 0.3, 1.9, 4.45, -10), boxG(3.0 * L, 0.9 * L, 0.25, 0, 5.75, -10.05),
   ]), gantryM, ld);
   // 車道管制號誌面板（LED 發光體穿透霧：fog = false；兩面共用一個材質）
   const arrowT = TX.laneSignalTexture('arrow'), xT = TX.laneSignalTexture('x');
-  const sigA = plane(0.78, 0.78, arrowT, { pos: [-1.9, 4.45, -9.84], basic: true, color: C(1.8, 1.8, 1.8) });
+  const sigA = plane(0.78 * L, 0.78 * L, arrowT, { pos: [-1.9, 4.45, -9.84], basic: true, color: C(1.8, 1.8, 1.8) });
   const sigMat = sigA.material;
   sigMat.fog = false;
   const sigB = new THREE.Mesh(sigA.geometry, sigMat);
   sigB.position.set(1.9, 4.45, -9.84);
   ld.add(sigA, sigB);
-  const halos = [-1.9, 1.9].map((x) => glow(C(0.5, 1.0, 0.6), [1.8, 1.8], [x, 4.45, -9.7], { opacity: 0.45, fog: false }));
+  const halos = [-1.9, 1.9].map((x) => glow(C(0.5, 1.0, 0.6), [1.8 * L, 1.8 * L], [x, 4.45, -9.7], { opacity: 0.45, fog: false }));
   ld.add(...halos);
   // 可變資訊標誌
   const fogT = TX.vmsTexture(vmsFog), closedT = TX.vmsTexture(vmsClosed);
-  const vms = plane(2.8, 0.7, fogT, { pos: [0, 5.75, -9.91], basic: true, color: C(1.7, 1.7, 1.7) });
+  const vms = plane(2.8 * L, 0.7 * L, fogT, { pos: [0, 5.75, -9.91], basic: true, color: C(1.7, 1.7, 1.7) });
   vms.material.fog = false;
   ld.add(vms);
   // HD 路障琥珀燈的位置（第 2 階段：霧中兩團低而近的琥珀光）
@@ -101,11 +106,14 @@ function install01(ch, SCRIPT) {
 // =============================================================================
 function install02(ch) {
   const ld = ch.ld;
-  // 煙帶：14 個深色煙霧 Sprite（z −72 … −7，每 5 m 一個），renderOrder 5 → 畫在加法光暈之後、把它們壓暗
+  // 煙帶：14 個深色煙霧 Sprite（z −72 … −7，每 5 m 一個），renderOrder 5 → 畫在加法光暈之後、把它們壓暗。
+  // 不受霧影響（fog = false，建構時設定、之後不切換）：受霧的深色煙在 40–70 m 外會被霧色完全取代，
+  // 在 LD 畫面上看不出任何變化；黑煙本來就比霧暗。要夠濃、夠寬（蓋到兩側拱腳的燈列），才能讀成
+  // 「遠處拱頂下多了一層黑」（spec 的 0.55 / 6–9 m / 受霧 在 160×120 下看不出來）。
   const r = rng(141);
   const tex = TX.smokeSprite(141);
   const mats = [0, 1, 2].map((i) => {
-    const m = new THREE.SpriteMaterial({ map: tex, color: 0x141414, transparent: true, opacity: 0.55, depthWrite: false, fog: true });
+    const m = new THREE.SpriteMaterial({ map: tex, color: 0x101112, transparent: true, opacity: 0.75, depthWrite: false, fog: false });
     m.rotation = i * 2.1;
     return m;
   });
@@ -113,8 +121,9 @@ function install02(ch) {
   for (let i = 0; i < 14; i++) {
     const z = -72 + 5 * i;
     const s = new THREE.Sprite(mats[i % 3]);
-    s.scale.set(6 + r() * 3, 3 + r(), 1);
-    s.position.set((r() - 0.5) * 6, 5.4 + r() * 0.8, z);
+    s.scale.set(9 + r() * 4, 3.2 + r(), 1);
+    // 左、中、右輪替（兩側蓋住拱腳的燈列，中間蓋住拱頂下的熱源亮斑上緣）
+    s.position.set(((i % 3) - 1) * 3.2 + (r() - 0.5), 4.5 + r() * 0.8, z);
     s.renderOrder = 5;
     s.userData.z = z;
     smoke.push(s);
@@ -153,7 +162,7 @@ function install02(ch) {
 // =============================================================================
 // CAM-03 公務維修廊道：地上一道濕黑的拖痕（沿 HD 消防水帶的路徑，只在人影推進時延長）；T2：廊道起霾
 // =============================================================================
-function buildTrail(path, { width = 0.14, y = 0.006, samples = 160 } = {}) {
+function buildTrail(path, { width = 0.14, y = 0.006, samples = 160, eye = null, roughness = 0.15, opacity = 0.75 } = {}) {
   const curve = new THREE.CatmullRomCurve3(path.map(([x, z]) => new THREE.Vector3(x, y, z)));
   const pts = curve.getSpacedPoints(samples);               // 轉角 → 門（z 遞增）
   const r = rng(303);
@@ -176,9 +185,18 @@ function buildTrail(path, { width = 0.14, y = 0.006, samples = 160 } = {}) {
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(pos.length).map((_, i) => (i % 3 === 1 ? 1 : 0)), 3));
-  // 光滑（roughness 0.15）的近黑色：紅外線補光與盡頭燈在上面的鏡面反光讓它讀起來是「濕的」
-  const mat = new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 0.15, metalness: 0, transparent: true, opacity: 0.75, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 });
+  // 法線：朝上，但偏向鏡頭（eye）。紅外線補光就在鏡頭旁，真正平的濕地面會把它反射到別處，
+  // 在近乎全黑的地板上一條黑色濕痕完全看不見；讓法線偏向鏡頭，光滑表面就會反射補光，
+  // 在畫面上讀成一道「濕亮的拖痕」（只有在補光照得到的地方），而不是一條發光的線。
+  const nrm = new Float32Array(pos.length);
+  const n = new THREE.Vector3();
+  for (let i = 0; i < pos.length; i += 3) {
+    if (eye) n.set(eye.x - pos[i], eye.y - pos[i + 1], eye.z - pos[i + 2]).normalize();
+    else n.set(0, 1, 0);
+    nrm[i] = n.x; nrm[i + 1] = n.y; nrm[i + 2] = n.z;
+  }
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  const mat = new THREE.MeshStandardMaterial({ color: 0x050505, roughness, metalness: 0, transparent: true, opacity, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 });
   const m = new THREE.Mesh(g, mat);
   m.name = 'trail';
   const zs = pts.map((p) => p.z);
@@ -201,7 +219,7 @@ function buildTrail(path, { width = 0.14, y = 0.006, samples = 160 } = {}) {
 
 function install03(ch) {
   const ld = ch.ld;
-  const trail = buildTrail(ch.hosePath);
+  const trail = buildTrail(ch.hosePath, { width: 0.3, opacity: 0.85 });
   ld.add(trail.mesh);
   ch.trail = trail;
   ch._trailIndex = null;
@@ -242,7 +260,11 @@ function install04(ch) {
   // 車頂燈的柔光（第 0 階段的基準畫面的一部分：讓「燈熄了」在 LD 下讀得出來）
   ch.car.updateMatrixWorld(true);
   const domePos = dome ? dome.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3(6.7, 1.28, -17.2);
-  const domeGlow = glow(C(1, 0.9, 0.7), [1.3, 0.8], [domePos.x, domePos.y, domePos.z], { opacity: 0.45 });
+  const domeGlow = glow(C(1, 0.9, 0.7), [2.0, 1.2], [domePos.x, domePos.y, domePos.z], { opacity: 0.65 });
+  // 燈在車廂裡：不做深度測試，光暈透過車窗 / 車頂淡淡浮在車上（否則整個被不透明的車窗擋住）。
+  // 白色車頂上加法光暈看不出來，所以比 spec 的 1.3×0.8 大一些：光暈的邊緣落在深色車窗與門洞上。
+  domeGlow.material.depthTest = false;
+  domeGlow.renderOrder = 3;
   ld.add(domeGlow);
   // 焦痕（HD 的兩片，同位置）
   const soot = [
@@ -251,7 +273,8 @@ function install04(ch) {
   ];
   ld.add(...soot);
   // 交通錐（HD 封鎖線的前三根柱位）
-  const coneM = std({ color: 0xc8521e, roughness: 0.65 }), stripeM = std({ color: 0xd8d8d0, roughness: 0.45 });
+  // 反光環帶微微自發光（回歸反射；黑白畫面裡橘色錐身很暗，環帶讓它讀得出是交通錐）
+  const coneM = std({ color: 0xc8521e, roughness: 0.65 }), stripeM = std({ color: 0xd8d8d0, roughness: 0.45, emissive: 0x2a2a2a });
   const cones = [[4.75, -11.2], [5.05, -16.6], [5.1, -22.4]].map(([x, z], i) => {
     const c = cone(coneM, stripeM); c.position.set(x, 0, z); c.rotation.y = i * 1.3; ld.add(c); return c;
   });
