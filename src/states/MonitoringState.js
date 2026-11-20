@@ -51,6 +51,7 @@ export class MonitoringState extends StoryState {
     this._minutes = [];
     this._actT0 = ctx.clock.time;
     this.director = null;
+    if (ctx.debug || pf.log) globalThis.__paceLog = [];   // 每一幕（每一輪）重新開始記錄
     if (direct) {
       applyPreset(ctx, STATES.MONITORING);
       const q = ctx.params?.get?.('clock');
