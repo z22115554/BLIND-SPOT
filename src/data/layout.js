@@ -32,11 +32,11 @@ export const CONTROL_ROOM = {
   camButtons: { y: 0.82, z: -2.36, xs: [-0.36, -0.12, 0.12, 0.36] },
   coffee: { x: 0.78, y: 0.78, z: -2.45 },
   // 終幕：平放在桌面上、正在被寫的便利貼與筆
-  endingNote: { x: 0.08, y: 0.781, z: -2.33, size: 0.09 },
+  endingNote: { x: -0.62, y: 0.781, z: -2.33, size: 0.09 },   // 主 CRT 左側、鍵盤與筆筒之間的空桌面
   // 防爆門緊急解鎖按鈕（控制台左翼，靠防爆門那側）
   unlockButton: { x: -2.05, y: 0.8, z: -2.42 },
   // 牆上 LED 電子鐘（北牆、主 CRT 上方，朝 +Z）
-  clock: { x: 0, y: 2.22, z: -3.46, w: 0.62, h: 0.22 },
+  clock: { x: -0.3, y: 2.3, z: -3.46, w: 0.62, h: 0.22 },   // 略偏左上：趴桌視角才不會被主 CRT 擋住
   chair: { x: 0, z: -1.55 },
   // 防爆門：西牆 x = -4，中心 z、寬、高；開啟時沿 +Z 滑入牆內
   blastDoor: { x: -4, z: -0.2, width: 1.7, height: 2.3, slide: 1.85 },
@@ -99,7 +99,9 @@ export const PORTALS = {
 export const SPAWN = {
   // 序幕/終幕：趴在桌上，頭側枕在手臂上（相機位置 / 視線目標 / 側傾）。
   // 視線斜斜望向主 CRT 與其上方的 LED 電子鐘 —— 序幕醒來第一眼、終幕倒下最後一眼都是「02:00」。
-  slumped: { x: 0.0, y: 0.95, z: -2.02, lookAt: { x: 0.1, y: 1.7, z: -3.4 }, roll: 0.38 },
+  slumped: { x: -0.85, y: 0.95, z: -2.02, lookAt: { x: -0.2, y: 1.8, z: -3.4 }, roll: 0.36 },
+  // 終幕寫字時的坐姿（俯視 endingNote），之後無力趴倒成 slumped
+  writing: { x: -0.62, z: -1.72, lookAt: { x: -0.62, y: 0.78, z: -2.29 } },
   // 坐姿：面對主 CRT
   seated: { x: 0, z: -1.6, yaw: 0, pitch: -0.05 },
 };
