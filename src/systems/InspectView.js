@@ -37,7 +37,9 @@ const DIM_LEVEL = 0.78;
 // 所以恢復比變暗更慢：每 0.25 秒畫面亮度變化約 ≤ 26%。
 const DIM_IN = 1.6, DIM_OUT = 2.2;
 const DIM_FULL_LOG = Math.log(1 / dimToBrightness(DIM_LEVEL));
-const FADE_IN = 0.8, FADE_OUT = 0.7;
+// 3D 物件與閱讀面板的淡入/淡出：物件常是畫面上最亮的東西（便利貼、日誌），關閉時它的消失本身就是亮度變化，
+// 所以淡出要比淡入更慢（實測 0.7 秒時畫面 0.2 秒內暗了 32%）。
+const FADE_IN = 0.8, FADE_OUT = 1.2;
 
 const CSS = `
 .bs-insp { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
@@ -48,6 +50,7 @@ const CSS = `
   box-shadow: 0 1.6em 4.5em rgba(0, 0, 0, 0.7), inset 0 0 3.2em rgba(0, 0, 0, 0.5);
   transform: translate(0.9em, -50%); opacity: 0; transition: opacity ${FADE_IN}s ease, transform 0.9s ease; }
 .bs-insp.is-on .bs-insp__panel { opacity: 1; transform: translate(0, -50%); }
+.bs-insp:not(.is-on) .bs-insp__panel { pointer-events: none; }   /* 淡出中的面板不攔截點擊 */
 .bs-insp.is-closing .bs-insp__panel { transition-duration: ${FADE_OUT}s, ${FADE_OUT}s; }
 .bs-insp.is-solo .bs-insp__panel { right: auto; left: 50%; width: min(36em, 88vw); transform: translate(-50%, -48%); }
 .bs-insp.is-solo.is-on .bs-insp__panel { transform: translate(-50%, -50%); }

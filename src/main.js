@@ -34,11 +34,13 @@ import { InspectView } from './systems/InspectView.js';
 import { registerStates } from './states/index.js';
 import { ResolutionGovernor } from './core/resolution.js';
 
+// 讓出一幀：rAF 之後再排一個 macrotask——下一段工作在這一幀「畫完之後」才開始（只等 rAF 的話，
+// 接續的工作會在同一幀的繪製之前執行，載入訊息要等到下一段工作做完才畫得出來）。
 const nextFrame = () => new Promise((resolve) => {
   let done = false;
   const go = () => { if (!done) { done = true; resolve(); } };
-  requestAnimationFrame(go);
-  setTimeout(go, 120); // 背景分頁不會觸發 rAF：最多等 120 ms
+  requestAnimationFrame(() => setTimeout(go, 0));
+  setTimeout(go, 150); // 背景分頁不會觸發 rAF：最多等 150 ms
 });
 
 async function boot() {
@@ -257,32 +259,93 @@ async function boot() {
 }
 
 /** 預先編譯主場景（含隱藏物件）的所有 shader program。@returns {Promise<{before:number, after:number, ms:number}>} */
-function precompile(ctx, { sync = false } = {}) {
+function precompile(ctx, { sync = false, warm = true } = {}) {
   const { renderer, scene, camera, postfx } = ctx;
   const t0 = performance.now();
   const before = renderer.info.programs?.length ?? 0;
-  const prevTarget = renderer.getRenderTarget();
-  const done = () => {
+  // composer 的場景目標（HalfFloat，線性輸出、不做 tone mapping）——與實際渲染相同的 program 變體
+  const withTarget = (fn) => {
+    const prev = renderer.getRenderTarget();
+    try { renderer.setRenderTarget(postfx?.composer?.readBuffer || null); return fn(); }
+    catch (e) { console.warn('[boot] precompile step failed', e); return null; }
+    finally { renderer.setRenderTarget(prev); }
+  };
+  const finish = () => {
+    if (warm) {
+      // 所有貼圖先上傳到 GPU（大張 Canvas 貼圖第一次被看到時的上傳＋mipmap 也會卡頓）
+      uploadTextures(renderer, scene);
+      // 再把整個場景（含隱藏物件）實際畫一次到很小的目標：幾何緩衝上傳、驅動端的管線/輸入格式變體也一併暖機
+      warmRender(ctx);
+    }
     const r = { before, after: renderer.info.programs?.length ?? 0, ms: Math.round(performance.now() - t0) };
     if (ctx.debug) console.info(`[boot] precompile: programs ${r.before} → ${r.after} in ${r.ms} ms`);
     return r;
   };
-  let p = null;
-  try {
-    camera.updateMatrixWorld();
-    // composer 的場景目標（HalfFloat，線性輸出、不做 tone mapping）——與實際渲染相同的 program 變體
-    const target = postfx?.composer?.readBuffer || null;
-    renderer.setRenderTarget(target);
-    if (sync || typeof renderer.compileAsync !== 'function') renderer.compile(scene, camera);
-    else p = renderer.compileAsync(scene, camera);
-  } catch (e) {
-    console.warn('[boot] precompile failed', e);
-  } finally {
-    renderer.setRenderTarget(prevTarget);
+  camera.updateMatrixWorld();
+  if (sync || typeof renderer.compileAsync !== 'function') {
+    withTarget(() => renderer.compile(scene, camera));
+    return Promise.resolve(finish());
   }
-  if (!p) return Promise.resolve(done());
+  const p = withTarget(() => renderer.compileAsync(scene, camera));
+  if (!p) return Promise.resolve(finish());
   // 最多等 20 秒（某些驅動不回報完成狀態時不會卡在載入畫面）
-  return Promise.race([p, new Promise((r) => setTimeout(r, 20000))]).then(done, (e) => { console.warn('[boot] precompile', e); return done(); });
+  return Promise.race([p, new Promise((r) => setTimeout(r, 20000))])
+    .catch((e) => console.warn('[boot] precompile', e))
+    .then(finish);
+}
+
+/** 把場景所有（含隱藏、視錐外的）物件畫一次到 64×64 的 HalfFloat 目標，然後完全還原可見性。
+ *  燈光維持原本的有效可見性（隱藏群組裡的燈不會被暫時點亮），所以燈光組合＝實際遊玩時的組合。 */
+function warmRender(ctx) {
+  const { renderer, scene, camera, postfx } = ctx;
+  const ref = postfx?.composer?.readBuffer;
+  const rt = new THREE.WebGLRenderTarget(64, 64, { type: THREE.HalfFloatType, samples: ref?.samples || 0 });
+  const litBefore = new Set();
+  scene.traverseVisible((o) => { if (o.isLight) litBefore.add(o); });
+  const undo = [];
+  scene.traverse((o) => {
+    if (o === scene || o.isLight || o.isCamera) return;
+    if (!o.visible) { o.visible = true; undo.push(() => { o.visible = false; }); }
+    if ((o.isMesh || o.isPoints || o.isLine || o.isSprite) && o.frustumCulled) { o.frustumCulled = false; undo.push(() => { o.frustumCulled = true; }); }
+  });
+  scene.traverse((o) => {
+    if (o.isLight && o.visible && !litBefore.has(o)) { o.visible = false; undo.push(() => { o.visible = true; }); }
+  });
+  const prev = renderer.getRenderTarget();
+  try {
+    renderer.setRenderTarget(rt);
+    renderer.render(scene, camera);
+  } catch (e) {
+    console.warn('[boot] warm render failed', e);
+  } finally {
+    for (let i = undo.length - 1; i >= 0; i--) undo[i]();
+    renderer.setRenderTarget(prev);
+    rt.dispose();
+  }
+}
+
+function uploadTextures(renderer, scene) {
+  if (typeof renderer.initTexture !== 'function') return 0;
+  const seen = new Set();
+  const up = (t) => {
+    if (!t || !t.isTexture || seen.has(t) || t.isRenderTargetTexture) return;
+    seen.add(t);
+    try { renderer.initTexture(t); } catch (e) { /* 個別貼圖失敗不影響開機 */ }
+  };
+  scene.traverse((o) => {
+    if (o.isLight && o.map) up(o.map);
+    const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
+    for (const m of mats) {
+      for (const k of Object.keys(m)) { const v = m[k]; if (v && v.isTexture) up(v); }
+      if (m.uniforms) {
+        for (const u of Object.values(m.uniforms)) {
+          const v = u?.value;
+          if (v?.isTexture) up(v); else if (Array.isArray(v)) v.forEach(up);
+        }
+      }
+    }
+  });
+  return seen.size;
 }
 
 function removeBootMessage() {
