@@ -18,7 +18,9 @@
 // -----------------------------------------------------------------------------
 // 實作補充（公開 API 之外的額外成員，供除錯/其他模組選用）：
 //   velocity (Vector3, m/s)、speed、eyeHeight、flashlightOn、headBob、refreshObstacles()、
-//   addObstacles(list) 回傳移除函式、isValidPosition(x, z)、flashlightRig（光束延遲/補光/霧中光暈參數）
+//   addObstacles(list) 回傳移除函式、isValidPosition(x, z)、flashlightRig（光束延遲/補光/霧中光暈參數）、
+//   setFlashlightDim(mult, durationSec)（手電筒亮度乘數，與開關無關）
+// * 拖曳環顧模式（沒有指標鎖定）下按 Esc 也會 emit 'pause:request'（檢視畫面開啟時 Esc 優先關閉檢視）。
 // =============================================================================
 import * as THREE from 'three';
 import { clamp, damp, smoothstep } from '../core/util.js';

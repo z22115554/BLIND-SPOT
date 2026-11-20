@@ -148,6 +148,11 @@ async function boot() {
   };
   const onResize = () => { const s = applySize(); ctx.bus.emit('resize', s); };
   window.addEventListener('resize', onResize);
+  // 載入期間視窗大小或 DPR 變了（那時還沒有 resize 監聽）：補套用一次
+  {
+    const cur = renderer.getSize(new THREE.Vector2());
+    if (cur.x !== window.innerWidth || cur.y !== window.innerHeight || renderer.getPixelRatio() !== res.pixelRatio()) onResize();
+  }
   // devicePixelRatio 改變但 CSS 尺寸沒變（拖到另一台螢幕）不會觸發 resize：監聽 resolution media query
   const watchDpr = () => {
     try {

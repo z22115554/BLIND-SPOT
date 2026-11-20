@@ -9,7 +9,8 @@
 // * 開關：亮度沿「舒適曲線」過渡（comfortCurve：兩端柔和、中段等速，最大斜率只有平均的 1.14 倍），
 //   開/關預設 1.1 秒（光敏感模式 1.6 秒）→ 任何 0.25 秒內的畫面亮度變化 ≤ 最終亮度的約 26%（黃金規則 ≤ 30%）。
 //   色溫由暖橘升到暖白（鎢絲燈感），但強度會補償顏色本身的亮度差，所以變色不會額外造成亮度跳動。
-//   dim（setDim）：獨立於開關的亮度乘數（例如車燈事件時讓手電筒相形失色），同一條曲線過渡。
+//   dim（setDim）：獨立於開關的亮度乘數（例如車燈事件時讓手電筒相形失色），同一條曲線、在對數空間過渡
+//   （1 → 0.3 → 1 每段時間的亮度「比例」變化相同；實測最暗的房間裡 1.0 秒降到 0.3 時每 0.25 秒 ≤ 約 25%）。
 //   沒有任何閃爍；關閉時 shadow.autoUpdate = false 以省下陰影貼圖的渲染。
 // =============================================================================
 import * as THREE from 'three';
@@ -56,7 +57,8 @@ export function comfortCurve(x) {
 
 /** 以 comfortCurve 由目前值過渡到目標值的小工具（遊戲時間 dt 驅動；中途改目標會從目前值重新起步）。 */
 class ComfortRamp {
-  constructor(v = 0) { this.value = v; this.target = v; this._from = v; this._x = 1; this._dur = 0; }
+  /** log = true：兩端都 > 0 時在對數空間內插（亮度乘數：每一段時間的「比例」變化相同）。 */
+  constructor(v = 0, { log = false } = {}) { this.value = v; this.target = v; this._from = v; this._x = 1; this._dur = 0; this._log = log; }
   /** duration = 由 0 到 1 整段所需秒數；實際時間依變化量等比例縮短（但不少於 MIN_RAMP）。≤ 0 = 立即。 */
   set(target, duration) {
     target = clamp(Number(target) || 0, 0, 1);
@@ -71,7 +73,10 @@ class ComfortRamp {
   update(dt) {
     if (this._x >= 1) { this.value = this.target; return this.value; }
     this._x = Math.min(1, this._x + dt / this._dur);
-    this.value = this._from + (this.target - this._from) * comfortCurve(this._x);
+    const k = comfortCurve(this._x);
+    this.value = this._log && this._from > 0.02 && this.target > 0.02
+      ? this._from * Math.pow(this.target / this._from, k)
+      : this._from + (this.target - this._from) * k;
     return this.value;
   }
   get busy() { return this._x < 1; }
@@ -87,7 +92,7 @@ export class FlashlightRig {
     this.rampDur = FLASHLIGHT_RAMP;
     this.dim = 1;            // 0..1 亮度乘數（setDim）
     this._on = new ComfortRamp(0);
-    this._dim = new ComfortRamp(1);
+    this._dim = new ComfortRamp(1, { log: true });
     this.maxIntensity = MAX_INTENSITY;
     this.bounceStrength = 0.036; // 反彈補光比例（相對於主燈 cd）
     this.hazeStrength = 1.0;     // 霧中光暈強度倍率（0 = 關閉）
