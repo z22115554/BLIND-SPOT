@@ -9,107 +9,762 @@
 //   c 高時加入輕微燈管不穩（緩慢的亮度起伏，週期 ≥ 0.4 秒，振幅 ≤ 15%，不可頻閃）。
 // 焦黑（setBurnt b: 0..1）：終幕的「貼圖剝落為焦黑廢墟」，牆面/桌面/設備混合為 charred 材質、螢幕全黑破裂。
 // 所有 set* 都必須平滑過渡（update 中 damp），而且可以在任何時候重複呼叫。
+//
+// 實作備註：
+//   * 靜態幾何依材質合併（controlRoom/kit.js Batcher），所有主控室材質共用一組 onBeforeCompile uniform
+//     （controlRoom/surfaceFX.js：uDirt 腐化髒污、uBurnt 焦黑剝落）。
+//   * 室內光源只有 3 盞 SpotLight（日光燈位置／緊急紅燈位置共用，切換時先熄再移再亮）＋1 盞補光 PointLight
+//     ＋螢幕光＋解鎖鈕紅光，避免光源數量拖慢其他場景。
+//   * 防爆門外的短廊使用不受光的暗色材質（頂點色由門口向內遞減），保證永遠只有黑暗與深度。
 // =============================================================================
 import * as THREE from 'three';
+import { Batcher, Fader, keyCurve, quad, noRaycast } from './controlRoom/kit.js';
+import { createSurfaceUniforms } from './controlRoom/surfaceFX.js';
+import { createMaterials, UVS } from './controlRoom/materials.js';
+import { buildShell } from './controlRoom/buildShell.js';
+import { buildConsole } from './controlRoom/buildConsole.js';
+import { buildFixtures } from './controlRoom/buildFixtures.js';
+import { LedBank, LED_COLORS } from './controlRoom/leds.js';
+import { SmokeSystem, SteamSystem } from './controlRoom/particles.js';
+import * as LT from './controlRoom/localTextures.js';
+import { clamp, smoothstep, damp } from '../core/util.js';
+
+// ---- 燈光參數（可調） --------------------------------------------------------------
+const F_CD = 16;         // 單盞日光燈（SpotLight）最大燭光
+const E_CD = 6;          // 緊急紅燈
+const FILL_CD = 6.5;      // 補光（模擬天花板/牆面反射）
+const TUBE_EM = 4.2;     // 燈管自發光
+const DIFF_EM = 0.9;     // 擴散板自發光
+const LENS_EM = 1.5;     // 緊急燈罩自發光
+const ENV_K = 0.55;      // 主控室專用環境貼圖（反射＋間接漫射）強度
+const AMBER = new THREE.Color('#ffc58a');
+
+const MODES = {
+  off: { pos: 'F', I: [0, 0, 0], col: '#dbeee4', tube: [0, 0, 0, 0, 0, 0], diff: [0, 0, 0], emerg: 0, fill: 0, fillCol: '#9fb2ad', power: 1, warm: 1 },
+  normal: { pos: 'F', I: [1, 1, 1], col: '#dbeee4', tube: [1, 1, 1, 1, 1, 1], diff: [1, 1, 1], emerg: 0, fill: 1, fillCol: '#a7beb6', power: 1, warm: 1 },
+  emergency: { pos: 'E', I: [1, 1, 1], col: '#ff1c0a', tube: [0, 0, 0, 0, 0, 0], diff: [0, 0, 0], emerg: 1, fill: 0.3, fillCol: '#ff2410', power: 0, warm: 0 },
+  restored: { pos: 'F', I: [0.56, 0.55, 0.3], col: '#ffd9a6', tube: [0.56, 0.56, 0.55, 0.55, 0.52, 0], diff: [0.56, 0.55, 0.3], emerg: 0, fill: 0.55, fillCol: '#d9b68e', power: 1, warm: 1 },
+  ending: { pos: 'F', I: [0.5, 0.42, 0.3], col: '#ff7a2e', tube: [0.16, 0.14, 0.12, 0.1, 0.08, 0], diff: [0.16, 0.12, 0.08], emerg: 0.7, fill: 0.55, fillCol: '#ff6a26', power: 1, warm: 0 },
+};
+// 日光燈啟動：幾次緩慢、低振幅的明暗起伏（每段 ≥ 0.35 秒，0.25 秒內變化 < 30%）
+const STARTUP_KEYS = [[0, 0], [0.12, 0.22], [0.24, 0.08], [0.4, 0.38], [0.52, 0.2], [0.7, 0.62], [0.8, 0.5], [1, 1]];
+const STARTUP_SOFT = [[0, 0], [0.45, 0.3], [1, 1]];
+const DECAL_TIERS = [[0.04, 0.3], [0.22, 0.52], [0.45, 0.76], [0.68, 0.98]];
+const DECAL_MAX = { waterStain: 0.85, soot: 0.9, scorch: 0.95 };
+
+/** 顏色過渡器 */
+class ColorFader {
+  constructor(c) { this.v = new THREE.Color(c); this.from = this.v.clone(); this.to = this.v.clone(); this.f = new Fader(1); }
+  set(c, dur, now) { this.from.copy(this.v); this.to.set(c); this.f.snap(0); this.f.set(1, dur, now); if (dur <= 0) this.v.copy(this.to); return this; }
+  snap(c) { this.v.set(c); this.from.copy(this.v); this.to.copy(this.v); this.f.snap(1); }
+  update(now) { const k = this.f.update(now); this.v.copy(this.from).lerp(this.to, k); return this.v; }
+}
 
 export class ControlRoom {
   constructor(ctx) {
     this.ctx = ctx;
-    const L = ctx.LAYOUT.CONTROL_ROOM;
+    const L = (this.L = ctx.LAYOUT.CONTROL_ROOM);
+    this.BS = ctx.LAYOUT.BLAST_STUB;
     this.group = new THREE.Group();
     this.group.name = 'controlRoom';
     ctx.scene.add(this.group);
 
-    const ph = (w, h, d, x, y, z, color = 0x444444) => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({ color }));
-      m.position.set(x, y, z); this.group.add(m); return m;
-    };
-    const ms = L.mainScreen;
-    const mainScreen = new THREE.Mesh(new THREE.PlaneGeometry(ms.w, ms.h), new THREE.MeshBasicMaterial({ color: 0x111111 }));
-    mainScreen.position.set(ms.x, ms.y, ms.z); this.group.add(mainScreen);
-    const sideScreens = L.sideScreens.map((s) => {
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(s.w, s.h), new THREE.MeshBasicMaterial({ color: 0x111111 }));
-      m.position.set(s.x, s.y, s.z); m.rotation.y = s.yaw; this.group.add(m); return m;
-    });
-    const screenLight = new THREE.PointLight(0x9fb4c8, 0.6, 0, 2);
-    screenLight.position.set(ms.x, ms.y, ms.z + 0.5); this.group.add(screenLight);
-
-    /**
-     * 可互動/可被其他模組引用的物件（States 會對它們註冊互動）。
-     * mainScreen / sideScreens 為 PlaneGeometry（朝 +Z / 依 yaw），材質由 CameraFeeds.init() 指派。
-     */
-    this.objects = {
-      mainScreen,                                   // THREE.Mesh — 主 CRT 螢幕（0.72×0.54）
-      sideScreens,                                  // [THREE.Mesh, THREE.Mesh] — 左 SYS LOG / 右 機電狀態
-      screenLight,                                  // THREE.PointLight — 螢幕光（CameraFeeds 依模式調整顏色/強度）
-      camButtons: L.camButtons.xs.map((x) => ph(0.09, 0.03, 0.06, x, L.camButtons.y, L.camButtons.z, 0x333333)), // CAM-01..04
-      stickyNote: ph(0.09, 0.09, 0.002, L.stickyNote.x, L.stickyNote.y, L.stickyNote.z, 0xe8d24a),            // 主 CRT 外殼上的便利貼
-      endingNote: ph(0.09, 0.002, 0.09, L.endingNote.x, L.endingNote.y, L.endingNote.z, 0xe8d24a),           // 終幕平放桌上的便利貼（預設隱藏）
-      pen: ph(0.01, 0.01, 0.14, L.endingNote.x + 0.05, L.endingNote.y + 0.01, L.endingNote.z, 0x111111),      // 終幕的筆（預設隱藏）
-      coffee: ph(0.09, 0.1, 0.09, L.coffee.x, L.coffee.y + 0.05, L.coffee.z, 0xdddddd),                       // 馬克杯（Group/Mesh）
-      clock: ph(L.clock.w, L.clock.h, 0.05, L.clock.x, L.clock.y, L.clock.z, 0x110000),                        // 牆上 LED 鐘
-      intercom: ph(0.05, 0.36, 0.26, L.intercom.x, L.intercom.y, L.intercom.z, 0x555555),                     // 對講機面板
-      ventPanel: ph(0.05, 0.5, 0.4, L.ventPanel.x, L.ventPanel.y, L.ventPanel.z, 0x556655),                   // 通風控制面板
-      ventLever: ph(0.06, 0.18, 0.03, L.ventPanel.x - 0.05, L.ventPanel.y - 0.1, L.ventPanel.z, 0xaa2222),    // 通風拉桿
-      blastDoor: ph(0.25, L.blastDoor.height, L.blastDoor.width, L.blastDoor.x, L.blastDoor.height / 2, L.blastDoor.z, 0x667066), // 防爆門
-      sideDoor: ph(0.08, L.sideDoor.height, L.sideDoor.width, L.sideDoor.x, L.sideDoor.height / 2, L.sideDoor.z, 0x556070),      // 側門
-      flashlightBox: ph(0.12, 0.3, 0.22, L.flashlightBox.x, L.flashlightBox.y, L.flashlightBox.z, 0xaa3322),  // 手電筒壁掛箱
-      unlockButton: ph(0.1, 0.05, 0.1, L.unlockButton.x, L.unlockButton.y, L.unlockButton.z, 0x661111),       // 防爆門緊急解鎖鈕
-      chair: ph(0.5, 0.9, 0.5, L.chair.x, 0.45, L.chair.z, 0x222222),
-    };
-    this.objects.endingNote.visible = false;
-    this.objects.pen.visible = false;
+    this.objects = {};
+    this.parts = {};
     /** 終幕便利貼的手寫動畫貼圖（TextureFactory.createStickyNote 的回傳物件）；stickyNoteTex 為主 CRT 上那張 */
     this.stickyNoteTex = null;
     this.endingNoteTex = null;
-  }
-  init() {}
 
-  /** 玩家碰撞用的障礙物（XZ 平面 AABB）：控制台、椅子、櫃子等。@returns {{minX,maxX,minZ,maxZ}[]} */
+    // ---- 共用資源 ----
+    this.U = createSurfaceUniforms(ctx);
+    this.mats = createMaterials(ctx, this.U);
+    this.envTex = this._buildEnv();
+    if (this.envTex) this.mats.setEnvMap(this.envTex);
+    this.tex = this._texApi();
+    this.sb = new Batcher(UVS);
+    this.leds = new LedBank(360);
+    this.glowTex = this.tex.get('glow');
+    this.dialTex = LT.dialTexture();
+    this.LEVER_UP = 0.35;
+    this.LEVER_DOWN = 2.72;
+    this.endingNoteOffsetZ = 0.045; // 終幕便利貼往玩家方向偏移（避免與 CAM 按鈕座重疊）
+    // 天花板特殊片：出風口、焦黑時下垂/脫落的天花板（格線索引見 buildShell.buildCeiling）
+    this.ceilingSpecial = [
+      { ix: 7, iz: 6, kind: 'vent' },
+      { ix: 3, iz: 7, kind: 'droop', hinge: 'x0', angle: 0.5, th: 0.35 },
+      { ix: 10, iz: 2, kind: 'droop', hinge: 'z1', angle: 1.05, th: 0.45 },
+      { ix: 9, iz: 6, kind: 'missing', hinge: 'x1', angle: 0.3, th: 0.55 },
+      { ix: 4, iz: 10, kind: 'missing', hinge: 'z0', angle: 0.25, th: 0.65 },
+      { ix: 6, iz: 1, kind: 'droop', hinge: 'x1', angle: 0.38, th: 0.5 },
+    ];
+    this._decalLists = new Batcher();
+    this._decalMats = [];
+
+    // ---- 螢幕（材質由 CameraFeeds.init() 指派） ----
+    const ms = L.mainScreen;
+    const screenMat = new THREE.MeshStandardMaterial({ color: 0x0c0e0d, roughness: 0.55, metalness: 0.0 });
+    const mainScreen = new THREE.Mesh(new THREE.PlaneGeometry(ms.w, ms.h), screenMat);
+    mainScreen.position.set(ms.x, ms.y, ms.z);
+    mainScreen.name = 'mainScreen';
+    this.group.add(mainScreen);
+    const sideScreens = L.sideScreens.map((s, i) => {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(s.w, s.h), screenMat);
+      m.position.set(s.x, s.y, s.z); m.rotation.y = s.yaw;
+      m.name = i === 0 ? 'sideScreenLeft' : 'sideScreenRight';
+      this.group.add(m);
+      return m;
+    });
+    const screenLight = new THREE.PointLight(0x9fb4c8, 0.6, 6, 2);
+    screenLight.position.set(ms.x, ms.y, ms.z + 0.5);
+    this.group.add(screenLight);
+    this.objects.mainScreen = mainScreen;
+    this.objects.sideScreens = sideScreens;
+    this.objects.screenLight = screenLight;
+
+    // ---- 建模 ----
+    buildShell(this);
+    buildConsole(this);
+    buildFixtures(this);
+    this.sb.build((k) => this.mats.get(k), this.group, { name: 'static' });
+    this._buildDecals();
+    this._buildScreenCracks();
+    this.group.add(this.leds.mesh);
+
+    // ---- 室內光源 ----
+    this._buildLights();
+    // ---- 粒子 ----
+    this.smoke = new SmokeSystem(this);
+    const c = L.coffee;
+    this.steam = new SteamSystem(this, new THREE.Vector3(c.x, c.y + this.parts.mug.height * 0.86, c.z));
+
+    // ---- 狀態 ----
+    this._f = {
+      corruption: new Fader(0), burnt: new Fader(0), smoke: new Fader(0), unlock: new Fader(0),
+      fill: new Fader(0), emerg: new Fader(0), power: new Fader(1), warm: new Fader(1),
+      tube: [0, 1, 2, 3, 4, 5].map(() => new Fader(0)), diff: [0, 1, 2].map(() => new Fader(0)),
+      lightI: [0, 1, 2].map(() => new Fader(0)),
+    };
+    this._lightCol = [0, 1, 2].map(() => new ColorFader('#dbeee4'));
+    this._fillCol = new ColorFader('#a7beb6');
+    this._lightPos = ['F', 'F', 'F'];
+    this._pending = [null, null, null];
+    this._mode = 'off';
+    this._startup = null;
+    this._clockText = this.ctx.flags?.clockText || '02:00';
+    this._colonOn = null;
+    this._intercomMode = 'off';
+    this._ventMode = 'ok';
+    this._ventGauge = null;
+    this._needle = 0.52;
+    this._ventLedCol = new THREE.Color(0, 0, 0);
+    this._intercomCol = new THREE.Color(0, 0, 0);
+    this._blastState = 'locked';
+    this._blastLampCol = new THREE.Color(0, 0, 0);
+    this._sideOpen = false;
+    this._coffeeStage = 0;
+    this._penP = -1; this._penAct = 0;
+    this._penBase = new THREE.Vector3();
+    this._tok = {};
+    this._smokeTint = new THREE.Color();
+    this.setLighting('off', { duration: 0 });
+    this.setClock(this._clockText);
+    this.setCoffeeStage(0);
+    this.setIntercomLed('off');
+    this.setVentLed('ok');
+  }
+
+  init() {
+    // 便利貼循環記號（存檔的循環次數）
+    try { this.setLoopTallies(this.ctx.flags?.loopCount || 0); } catch (e) { console.warn('[ControlRoom] tallies', e); }
+  }
+
+  // ===========================================================================
+  // 內部：貼圖 API（容錯）、光源、貼花、螢幕裂痕
+  // ===========================================================================
+  _texApi() {
+    const tx = this.ctx.textures;
+    const blank = () => LT.solidTexture('#6a6a6a');
+    const safe = (fn, fb) => {
+      try { const r = fn(); return r ?? fb(); } catch (e) { console.warn('[ControlRoom] texture call failed', e); return fb(); }
+    };
+    const noteFb = () => ({ texture: blank(), canvas: null, setProgress() {}, setTallies() {}, penPosition: () => ({ u: 0.5, v: 0.5 }) });
+    const clockFb = () => ({ texture: blank(), setText() {}, setColonVisible() {}, setDim() {} });
+    return {
+      get: (n) => safe(() => tx.get(n), blank),
+      label: (text, o) => safe(() => tx.createLabel(text, o), blank),
+      panel: (k) => safe(() => tx.createPanelGraphic(k), blank),
+      sign: (t, o) => safe(() => tx.createSign(t, o), blank),
+      coffee: (n) => safe(() => tx.createCoffeeSurface(n), blank),
+      tunnelMap: () => safe(() => tx.createTunnelMap(), blank),
+      stickyNote: () => safe(() => tx.createStickyNote(), noteFb),
+      ledClock: () => safe(() => tx.createLedClock(), clockFb),
+    };
+  }
+
+  /** 主控室專用的環境貼圖：暗色房間＋三條日光燈帶（只套在本模組材質上，不設 scene.environment）。 */
+  _buildEnv() {
+    const r = this.ctx.renderer;
+    if (!r) return null;
+    try {
+      const L = this.L, eye = 1.4;
+      const scene = new THREE.Scene();
+      const disp = [];
+      const add = (g, color, side = THREE.FrontSide) => {
+        const m = new THREE.MeshBasicMaterial({ color, side });
+        const mesh = new THREE.Mesh(g, m); scene.add(mesh); disp.push(g, m); return mesh;
+      };
+      const room = add(new THREE.BoxGeometry(L.maxX - L.minX, L.height, L.maxZ - L.minZ), new THREE.Color(0.05, 0.058, 0.055), THREE.BackSide);
+      room.position.y = L.height / 2 - eye;
+      const floor = add(new THREE.PlaneGeometry(8, 7), new THREE.Color(0.08, 0.085, 0.08));
+      floor.rotation.x = -Math.PI / 2; floor.position.y = 0.01 - eye;
+      const desk = add(new THREE.BoxGeometry(5.2, 0.9, 0.9), new THREE.Color(0.03, 0.033, 0.033));
+      desk.position.set(0, 0.4 - eye, (L.desk.minZ + L.desk.maxZ) / 2);
+      for (const f of L.fluorescents) {
+        const m = add(new THREE.PlaneGeometry(1.24, 0.28), new THREE.Color(5.0, 5.6, 5.3));
+        m.rotation.x = Math.PI / 2; m.position.set(f.x, L.height - 0.08 - eye, f.z);
+      }
+      const pm = new THREE.PMREMGenerator(r);
+      const rt = pm.fromScene(scene, 0.04, 0.05, 30);
+      pm.dispose();
+      for (const d of disp) d.dispose();
+      return rt.texture;
+    } catch (e) {
+      console.warn('[ControlRoom] env map unavailable', e);
+      return null;
+    }
+  }
+
+  _buildLights() {
+    const L = this.L, H = L.height;
+    this._posF = L.fluorescents.map((f) => ({ p: new THREE.Vector3(f.x, H - 0.09, f.z), t: new THREE.Vector3(f.x, 0, f.z + 0.15), angle: 1.56, pen: 0.55, dist: 7 }));
+    const tgt = [new THREE.Vector3(-2.9, 0.2, -0.6), new THREE.Vector3(3.3, 0.5, 1.1), new THREE.Vector3(1.2, 0, 1.2)];
+    this._posE = L.emergencyLights.map((e, i) => ({ p: new THREE.Vector3(e.x, e.y - 0.07, e.z + (e.z < 0 ? 0.06 : -0.06)), t: tgt[i] || new THREE.Vector3(0, 0, 0), angle: 1.15, pen: 1, dist: 6 }));
+    this.roomLights = [0, 1, 2].map((i) => {
+      const s = new THREE.SpotLight(0xffffff, 0, 6.5, 1.36, 0.85, 2);
+      s.name = `roomLight${i}`;
+      s.castShadow = false;
+      this.group.add(s, s.target);
+      this._placeLight(s, this._posF[i]);
+      return s;
+    });
+    this.fillLight = new THREE.PointLight(0xffffff, 0, 7, 2);
+    this.fillLight.position.set(0, 1.75, 0.1);
+    this.group.add(this.fillLight);
+  }
+  _placeLight(s, P) {
+    s.position.copy(P.p); s.target.position.copy(P.t); s.target.updateMatrixWorld();
+    s.angle = P.angle; s.penumbra = P.pen; s.distance = P.dist;
+  }
+
+  /** 腐化貼花（依材質/門檻層合併）。 */
+  addDecal(texName, tier, w, h, matrix, geom = null) {
+    const g = geom || quad(w, h);
+    this._decalLists.add(`${texName}|${tier}`, g, matrix, { uv: false });
+  }
+  _buildDecals() {
+    const meshes = this._decalLists.build((key) => {
+      const [name, tier] = key.split('|');
+      const m = this.mats.make({
+        map: this.tex.get(name), transparent: true, depthWrite: false, opacity: 0, roughness: 0.95, metalness: 0,
+        polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+      }, `cr:decal:${key}`);
+      this._decalMats.push({ m, name, tier: Number(tier) });
+      return m;
+    }, this.group, { name: 'decals' });
+    for (const [key, mesh] of Object.entries(meshes)) {
+      noRaycast(mesh); mesh.visible = false; mesh.renderOrder = 1;
+      const d = this._decalMats.find((x) => `${x.name}|${x.tier}` === key);
+      if (d) d.mesh = mesh;
+    }
+  }
+
+  _buildScreenCracks() {
+    const L = this.L;
+    const crackMat = (seed) => new THREE.MeshStandardMaterial({ map: LT.crackTexture(seed), roughness: 0.18, metalness: 0.2, transparent: true, opacity: 0, depthWrite: false });
+    this._cracks = [];
+    const ms = L.mainScreen;
+    const m0 = new THREE.Mesh(new THREE.PlaneGeometry(ms.w, ms.h), crackMat(7));
+    m0.position.set(ms.x, ms.y, ms.z + 0.004);
+    this._cracks.push(m0);
+    L.sideScreens.forEach((s, i) => {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(s.w, s.h), crackMat(11 + i * 5));
+      m.position.set(s.x + Math.sin(s.yaw) * 0.004, s.y, s.z + Math.cos(s.yaw) * 0.004);
+      m.rotation.y = s.yaw;
+      this._cracks.push(m);
+    });
+    for (const m of this._cracks) { m.visible = false; m.renderOrder = 1; this.group.add(noRaycast(m)); }
+  }
+
+  // ===========================================================================
+  // 公開 API
+  // ===========================================================================
+
+  /** 玩家碰撞用的障礙物（XZ 平面 AABB）：控制台、櫃子、門框等（不含椅子）。@returns {{minX,maxX,minZ,maxZ}[]} */
   getObstacles() {
-    const d = this.ctx.LAYOUT.CONTROL_ROOM.desk;
-    return [{ minX: d.minX, maxX: d.maxX, minZ: d.minZ, maxZ: d.maxZ }];
+    const L = this.L, d = L.desk, bd = L.blastDoor, S = L.maxZ;
+    const pocket = this.blastPocket || { z0: bd.z + bd.width / 2 + 0.07, z1: bd.z + bd.width / 2 + 2.2 };
+    return [
+      { minX: d.minX, maxX: d.maxX, minZ: d.minZ, maxZ: d.maxZ },                         // 控制台
+      { minX: d.minX + 0.05, maxX: d.maxX - 0.05, minZ: L.minZ, maxZ: d.minZ },          // 控制台後方
+      { minX: -3.02, maxX: -1.46, minZ: S - 0.66, maxZ: S },                             // 檔案櫃
+      { minX: 0.83, maxX: 2.27, minZ: S - 0.6, maxZ: S },                                // 咖啡台
+      { minX: L.minX, maxX: -3.43, minZ: L.minZ, maxZ: -2.93 },                          // 置物櫃
+      { minX: 3.35, maxX: L.maxX, minZ: L.minZ, maxZ: -2.85 },                           // 機櫃
+      { minX: L.minX, maxX: L.minX + 0.34, minZ: bd.z - bd.width / 2 - 0.3, maxZ: pocket.z0 }, // 防爆門框與手輪
+      { minX: L.minX, maxX: L.minX + 0.47, minZ: pocket.z0, maxZ: pocket.z1 },           // 防爆門門袋
+      { minX: L.maxX - 0.22, maxX: L.maxX, minZ: 2.94, maxZ: 3.16 },                    // 滅火器
+      // 側門向外旋開後貼在廊道北側的門扇（關門時此區在牆外，無影響）
+      { minX: L.maxX + 0.15, maxX: L.maxX + 0.17 + L.sideDoor.width + 0.05, minZ: L.sideDoor.hingeZ - 0.2, maxZ: L.sideDoor.hingeZ + 0.07 },
+    ];
   }
 
   /** mode: 'off' | 'normal' | 'emergency'（紅色緊急照明）| 'restored'（第三幕：昏暗暖色）| 'ending'（濃煙中的殘光） */
-  setLighting(mode, { duration = 1 } = {}) {}
+  setLighting(mode, { duration = 1 } = {}) {
+    const M = MODES[mode];
+    if (!M) { console.warn('[ControlRoom] unknown lighting mode', mode); return; }
+    const now = this.ctx.clock.time;
+    const dur = Math.max(0, duration);
+    this._mode = mode;
+    if (this._startup && this._lastStartK) {
+      // 啟動中途被改變：把目前的啟動包絡併入各過渡器，避免亮度跳變
+      for (let i = 0; i < 3; i++) {
+        const k = this._lastStartK[i];
+        this._f.lightI[i].snap(this._f.lightI[i].v * k);
+        this._f.diff[i].snap(this._f.diff[i].v * k);
+        this._f.tube[i * 2].snap(this._f.tube[i * 2].v * k);
+        this._f.tube[i * 2 + 1].snap(this._f.tube[i * 2 + 1].v * k);
+      }
+      this._f.fill.snap(this._f.fill.v * (this._lastStartK[0] + this._lastStartK[1] + this._lastStartK[2]) / 3);
+    }
+    this._startup = null;
+    for (let i = 0; i < 3; i++) {
+      const fI = this._f.lightI[i];
+      if (this._lightPos[i] !== M.pos && fI.v > 0.002 && dur > 0) {
+        // 先熄滅、移到新位置、再亮起
+        fI.set(0, dur * 0.5, now);
+        this._pending[i] = { pos: M.pos, I: M.I[i], col: M.col, dur: dur * 0.5 };
+      } else {
+        this._pending[i] = null;
+        if (this._lightPos[i] !== M.pos) {
+          this._lightPos[i] = M.pos;
+          this._placeLight(this.roomLights[i], (M.pos === 'F' ? this._posF : this._posE)[i]);
+          this._lightCol[i].snap(M.col);
+        } else this._lightCol[i].set(M.col, dur, now);
+        fI.set(M.I[i], dur, now);
+      }
+    }
+    M.tube.forEach((v, j) => this._f.tube[j].set(v, dur, now));
+    M.diff.forEach((v, j) => this._f.diff[j].set(v, dur, now));
+    this._f.emerg.set(M.emerg, dur, now);
+    this._f.fill.set(M.fill, dur, now);
+    this._fillCol.set(M.fillCol, dur, now);
+    this._f.power.set(M.power, Math.min(dur, 0.6), now);
+    this._f.warm.set(M.warm, dur, now);
+  }
+
   /** 序幕：日光燈啟動（幾次緩慢、低振幅的明暗起伏後穩定點亮；不可頻閃）。含 audio 'tubeStart'。@returns {Promise<void>} */
-  lightsStartup(duration = 3.5) { return this.ctx.clock.wait(duration); }
-  setCorruption(c, { duration = 2 } = {}) {}
-  setBurnt(b, { duration = 3 } = {}) {}
+  lightsStartup(duration = 3.5) {
+    const now = this.ctx.clock.time;
+    const prev = this._overallLevel ?? 0;
+    try { this.ctx.audio?.sfx?.('tubeStart'); } catch (e) { console.warn('[ControlRoom] sfx', e); }
+    this.setLighting('normal', { duration: 0 });
+    this._startup = { t0: now, dur: Math.max(0.8, duration), carry: prev };
+    return this.ctx.clock.wait(Math.max(0.8, duration));
+  }
+
+  setCorruption(c, { duration = 2 } = {}) { this._f.corruption.set(clamp(c), duration, this.ctx.clock.time); }
+  setBurnt(b, { duration = 3 } = {}) { this._f.burnt.set(clamp(b), duration, this.ctx.clock.time); }
+
   /** 0 熱咖啡（冒蒸氣粒子）/ 1 冷掉浮灰 / 2 乾涸龜裂的杯子 */
-  setCoffeeStage(stage) {}
-  /** LED 鐘顯示 'HH:MM'（冒號每秒閃爍由本模組處理；blank = true 顯示 '--:--'）。 */
-  setClock(text) {}
+  setCoffeeStage(stage) {
+    const s = Math.max(0, Math.min(2, Math.round(stage || 0)));
+    this._coffeeStage = s;
+    const m = this.parts.mug;
+    if (!m) return;
+    m.liqMat.map = m.tex[s];
+    m.liqMat.needsUpdate = true;
+    m.liqMat.roughness = s === 0 ? 0.1 : s === 1 ? 0.55 : 0.9;
+    m.liquid.position.y = m.height * (s === 0 ? 0.82 : s === 1 ? 0.78 : 0.075);
+    m.liquid.scale.setScalar(s === 2 ? 0.93 : 1);
+    m.mugMat.color.set(s === 0 ? 0xe9e4d8 : s === 1 ? 0xd8d0bf : 0xaea38f);
+    m.mugMat.roughness = s === 0 ? 0.3 : s === 1 ? 0.45 : 0.75;
+    m.crack.visible = s === 2;
+    m.rings[0].visible = s >= 1;
+    m.rings[1].visible = s === 2;
+  }
+
+  /** LED 鐘顯示 'HH:MM'（冒號每秒閃爍由本模組處理；'blank' / blank = true 顯示 '--:--'）。 */
+  setClock(text, blank = false) {
+    const isBlank = blank === true || blank?.blank === true || text === 'blank' || text === true || text == null || text === '';
+    const t = isBlank ? '--:--' : String(text);
+    this._clockText = t;
+    try { this.ledClock?.setText(t); } catch (e) { console.warn('[ControlRoom] clock', e); }
+  }
+
   /** 'off' | 'ringing'（緩慢脈動的琥珀燈，週期 1.2 秒）| 'talking'（穩定綠燈） */
-  setIntercomLed(mode) {}
+  setIntercomLed(mode) { this._intercomMode = mode === 'ringing' || mode === 'talking' ? mode : 'off'; }
   /** 'ok' | 'fault'（琥珀）| 'off' */
-  setVentLed(mode) {}
-  /** 拉桿動畫，回傳 Promise。 */
-  pullVentLever() { return this.ctx.clock.wait(0.6); }
+  setVentLed(mode) { this._ventMode = mode === 'fault' || mode === 'off' ? mode : 'ok'; }
+  /** （額外）直接指定轉速表讀數 0..1；null = 依 setVentLed 狀態自動。 */
+  setVentGauge(v) { this._ventGauge = v == null ? null : clamp(v); }
+
+  /** 拉桿動畫（拉下後保持在下方），回傳 Promise。 */
+  pullVentLever() {
+    const lever = this.parts.vent?.lever;
+    if (!lever) return this.ctx.clock.wait(0.6);
+    const tok = this._token('lever');
+    const a0 = lever.rotation.x, a1 = this.LEVER_DOWN;
+    return this.ctx.clock.tween(0.55, (e) => { if (this._tok.lever === tok) lever.rotation.x = a0 + (a1 - a0) * e; }, 'inOut')
+      .then(() => this.ctx.clock.tween(0.22, (e, k) => { if (this._tok.lever === tok) lever.rotation.x = a1 + Math.sin(k * Math.PI) * 0.07; }, 'linear'));
+  }
+  /** （額外）直接設定拉桿位置（跳關用）。 */
+  setVentLever(down, { duration = 0 } = {}) {
+    const lever = this.parts.vent?.lever;
+    if (!lever) return Promise.resolve();
+    const tok = this._token('lever');
+    const a0 = lever.rotation.x, a1 = down ? this.LEVER_DOWN : this.LEVER_UP;
+    if (duration <= 0) { lever.rotation.x = a1; return Promise.resolve(); }
+    return this.ctx.clock.tween(duration, (e) => { if (this._tok.lever === tok) lever.rotation.x = a0 + (a1 - a0) * e; });
+  }
+
   /** 按鈕按下動畫（0..3）。 */
-  pressCamButton(index) {}
+  pressCamButton(index) {
+    const btn = this.objects.camButtons?.[index];
+    if (!btn) return Promise.resolve();
+    const key = `cam${index}`;
+    const tok = this._token(key);
+    const rest = btn.userData.rest, n = btn.userData.normal;
+    return this.ctx.clock.tween(0.07, (e) => { if (this._tok[key] === tok) btn.position.copy(rest).addScaledVector(n, -0.005 * e); }, 'out')
+      .then(() => this.ctx.clock.tween(0.16, (e) => { if (this._tok[key] === tok) btn.position.copy(rest).addScaledVector(n, -0.005 * (1 - e)); }, 'inOut'));
+  }
+
   /** 解鎖鈕發出緩慢呼吸的紅光（週期 ≥ 1.5 秒，不可閃爍）。 */
-  setUnlockGlow(on) {}
-  pressUnlockButton() { return this.ctx.clock.wait(0.4); }
+  setUnlockGlow(on) { this._f.unlock.set(on ? 1 : 0, 0.9, this.ctx.clock.time); }
+
+  /** 翻開透明護蓋並壓下紅色蘑菇鈕。@returns {Promise<void>} */
+  pressUnlockButton() {
+    const u = this.parts.unlock;
+    if (!u) return this.ctx.clock.wait(0.4);
+    const tok = this._token('unlock');
+    const c0 = u.coverPivot.rotation.x;
+    return this.ctx.clock.tween(0.32, (e) => { if (this._tok.unlock === tok) u.coverPivot.rotation.x = c0 + (-1.95 - c0) * e; }, 'out')
+      .then(() => this.ctx.clock.tween(0.14, (e) => { if (this._tok.unlock === tok) u.btn.position.y = 0.024 - 0.009 * e; }, 'inOut'));
+  }
+
   /** 手電筒從箱子取下（隱藏箱內手電筒）。 */
-  takeFlashlight() {}
+  takeFlashlight() { if (this.parts.flashlight) this.parts.flashlight.fl.visible = false; }
+
   /** 側門向外（+X）旋開；回傳 Promise。 */
-  openSideDoor(duration = 2.4) { return this.ctx.clock.wait(duration); }
-  /** 防爆門沿 +Z 滑入牆內；回傳 Promise。 */
-  openBlastDoor(duration = 4.5) { return this.ctx.clock.wait(duration); }
+  openSideDoor(duration = 2.4) {
+    this._sideOpen = true;
+    return this._swingSideDoor(Math.PI / 2 * 0.96, duration);
+  }
+  /** （額外）關上側門。 */
+  closeSideDoor(duration = 1.6) { this._sideOpen = false; return this._swingSideDoor(0, duration); }
+  _swingSideDoor(target, duration) {
+    const pivot = this.objects.sideDoor;
+    const tok = this._token('side');
+    const a0 = pivot.rotation.y;
+    if (duration <= 0) { pivot.rotation.y = target; return Promise.resolve(); }
+    // 厚重的門：先慢慢鬆開，再穩穩盪開
+    const ease = (k) => { const s = k * k * (3 - 2 * k); return s * s * (3 - 2 * s) * 0.35 + s * 0.65; };
+    return this.ctx.clock.tween(duration, (e) => { if (this._tok.side === tok) pivot.rotation.y = a0 + (target - a0) * e; }, ease);
+  }
+
+  /** 防爆門沿 +Z 滑入牆內門袋；回傳 Promise。（先轉動氣壓閥手輪、縮回鎖栓，再滑開） */
+  openBlastDoor(duration = 4.5) {
+    const P = this.parts.blast;
+    const slide = this.L.blastDoor.slide;
+    const tok = this._token('blast');
+    const D = Math.max(0.5, duration);
+    const tA = D * 0.24;
+    const w0 = P.wheel.rotation.x, b0 = P.bolts.position.z, d0 = P.door.position.z;
+    this._blastState = 'opening';
+    const alive = () => this._tok.blast === tok;
+    return this.ctx.clock.tween(tA, (e) => {
+      if (!alive()) return;
+      P.wheel.rotation.x = w0 + e * Math.PI * 2.5;
+      P.bolts.position.z = b0 + (0.12 - b0) * e;
+    }, 'inOut').then(() => this.ctx.clock.tween(D - tA, (e) => {
+      if (!alive()) return;
+      P.door.position.z = d0 + (slide - d0) * e;
+    }, 'inOut')).then(() => { if (alive()) this._blastState = 'open'; });
+  }
+  /** （額外）直接設定防爆門開關（跳關/重置）。 */
+  setBlastDoorOpen(open) {
+    const P = this.parts.blast;
+    this._token('blast');
+    P.door.position.z = open ? this.L.blastDoor.slide : 0;
+    P.bolts.position.z = open ? 0.12 : 0;
+    this._blastState = open ? 'open' : 'locked';
+  }
+
   /** 濃煙（0..1）：從防爆門湧入、翻滾著充滿房間的煙霧粒子，並讓室內燈光被煙吞沒變暗。
    *  scene.fog 由 states/common.js 統一管理：它會讀取 this.smokeLevel（目前平滑後的值 0..1）把霧轉黑轉濃。 */
-  setSmoke(amount, { duration = 4 } = {}) {}
+  setSmoke(amount, { duration = 4 } = {}) { this._f.smoke.set(clamp(amount), duration, this.ctx.clock.time); }
   /** 目前（平滑後）的濃煙量 0..1 —— 唯讀，供 states/common.js 調整 scene.fog。 */
-  get smokeLevel() { return 0; }
+  get smokeLevel() { return this._f ? this._f.smoke.v : 0; }
+
   /** 'monitor'（主 CRT 上那張）/ 'ending'（桌上那張＋筆）可見性 */
-  setNoteVisible(which, on) {}
+  setNoteVisible(which, on) {
+    if (which === 'monitor') this.objects.stickyNote.visible = !!on;
+    else if (which === 'ending') { this.objects.endingNote.visible = !!on; this.objects.pen.visible = !!on; }
+  }
+
   /** 終幕寫字：0..1，同步更新 endingNote 的貼圖與筆的位置。 */
-  setEndingWriting(p) {}
+  setEndingWriting(p) {
+    const k = clamp(p);
+    try { this.endingNoteTex?.setProgress(k); } catch (e) { console.warn('[ControlRoom] setProgress', e); }
+    if (this._penP >= 0 && Math.abs(k - this._penP) > 1e-5) this._penAct = 1;
+    this._penP = k;
+    let uv = { u: 0.5, v: 0.5 };
+    try { uv = this.endingNoteTex?.penPosition?.() || uv; } catch (e) { /* 保持預設 */ }
+    const note = this.objects.endingNote;
+    const size = this.L.endingNote.size;
+    // penPosition 以貼圖畫布座標回傳（u 左→右、v 上→下）
+    const local = new THREE.Vector3((clamp(uv.u) - 0.5) * size, (0.5 - clamp(uv.v)) * size, 0.0015);
+    note.updateMatrix();
+    this._penBase.copy(local.applyMatrix4(note.matrix));
+    this.objects.pen.position.copy(this._penBase);
+  }
+
   /** 便利貼角落的「正」字記號（循環次數）。 */
-  setLoopTallies(n) {}
+  setLoopTallies(n) {
+    for (const t of [this.stickyNoteTex, this.endingNoteTex]) {
+      try { t?.setTallies(n); } catch (e) { console.warn('[ControlRoom] setTallies', e); }
+    }
+  }
+
   /** 重置為序幕初始狀態（循環重來時呼叫）：門關、腐化 0、焦黑 0、咖啡 0、煙 0。 */
-  reset() {}
-  update(dt, t) {}
+  reset() {
+    for (const k of Object.keys(this._tok)) this._tok[k]++;
+    const f = this._f;
+    f.corruption.snap(0); f.burnt.snap(0); f.smoke.snap(0); f.unlock.snap(0);
+    this.smoke.reset();
+    this.setCoffeeStage(0);
+    this.setBlastDoorOpen(false);
+    this.parts.blast.wheel.rotation.x = 0;
+    this.objects.sideDoor.rotation.y = 0;
+    this._sideOpen = false;
+    this.setVentLever(false);
+    const u = this.parts.unlock;
+    u.coverPivot.rotation.x = 0; u.btn.position.y = 0.024;
+    this.camButtonsReset();
+    if (this.parts.flashlight) this.parts.flashlight.fl.visible = true;
+    this.setNoteVisible('monitor', true);
+    this.setNoteVisible('ending', false);
+    this._penP = -1; this._penAct = 0;
+    this.setIntercomLed('off');
+    this.setVentLed('ok');
+    this._ventGauge = null;
+    this.setLighting('normal', { duration: 0 });
+    for (const tl of this.ceilingTiles || []) { tl.pivot.rotation.set(0, 0, 0); if (tl.mat.transparent) tl.mat.opacity = 1; tl.pivot.visible = true; }
+  }
+  camButtonsReset() { for (const b of this.objects.camButtons || []) b.position.copy(b.userData.rest); }
+
+  _token(key) { this._tok[key] = (this._tok[key] || 0) + 1; return this._tok[key]; }
+
+  // ===========================================================================
+  // 每幀
+  // ===========================================================================
+  update(dt, t) {
+    const now = this.ctx.clock.time;
+    const reduce = !!this.ctx.settings?.get?.('reduceFlicker');
+    const f = this._f;
+    const c = f.corruption.update(now);
+    const b = f.burnt.update(now);
+    const s = f.smoke.update(now);
+    const power = f.power.update(now);
+    const warm = f.warm.update(now);
+    const emerg = f.emerg.update(now);
+    const fill = f.fill.update(now);
+    const fillCol = this._fillCol.update(now);
+
+    this.U.uDirt.value = c;
+    this.U.uBurnt.value = b;
+    this.U.uEmber.value = b > 0.001 ? 0.05 * (1 - b * b) : 0;
+
+    // ---- 燈光 ----
+    const corrDim = 1 - 0.42 * c;
+    const smokeDim = 1 - 0.68 * s;
+    const burnDim = 1 - 0.3 * b;
+    const undA = reduce ? 0 : 0.12 * smoothstep(0.55, 1, c);
+    const startK = [1, 1, 1];
+    if (this._startup) {
+      const st = this._startup;
+      const keys = reduce ? STARTUP_SOFT : STARTUP_KEYS;
+      let done = true;
+      for (let i = 0; i < 3; i++) {
+        const lag = [0, 0.18, 0.09][i];
+        const k = (now - st.t0 - lag) / st.dur;
+        if (k < 1) done = false;
+        const carry = st.carry * clamp(1 - (now - st.t0) / 1.2);
+        startK[i] = Math.max(keyCurve(keys, clamp(k)), carry);
+      }
+      if (done) this._startup = null;
+    }
+    this._lastStartK = startK;
+    let level = 0;
+    for (let i = 0; i < 3; i++) {
+      const fI = f.lightI[i];
+      const Iv = fI.update(now);
+      const pend = this._pending[i];
+      if (pend && fI.done) {
+        this._pending[i] = null;
+        this._lightPos[i] = pend.pos;
+        this._placeLight(this.roomLights[i], (pend.pos === 'F' ? this._posF : this._posE)[i]);
+        this._lightCol[i].snap(pend.col);
+        fI.set(pend.I, pend.dur, now);
+      }
+      const isF = this._lightPos[i] === 'F';
+      const und = undA > 0 ? 1 - undA * (0.5 + 0.5 * Math.sin((t * Math.PI * 2) / 2.9 + i * 2.1)) * (0.65 + 0.35 * Math.sin((t * Math.PI * 2) / 7.7 + i * 1.3)) : 1;
+      const col = this._lightCol[i].update(now);
+      const L = this.roomLights[i];
+      L.color.copy(col);
+      if (isF) L.color.lerp(AMBER, c * warm);
+      const k = Iv * (isF ? startK[i] * und * corrDim : 1) * smokeDim * burnDim;
+      L.intensity = k * (isF ? F_CD : E_CD);
+      level += isF ? k : k * 0.3;
+      // 燈管/擴散板
+      const tubes = this.tubeMats[i];
+      for (let j = 0; j < 2; j++) {
+        const tv = f.tube[i * 2 + j].update(now) * startK[i] * und * corrDim * (1 - 0.5 * s);
+        tubes[j].emissive.copy(L.color);
+        tubes[j].emissiveIntensity = tv * TUBE_EM;
+      }
+      const dv = f.diff[i].update(now) * startK[i] * und * corrDim * (1 - 0.45 * s);
+      this.diffuserMats[i].emissive.copy(L.color);
+      this.diffuserMats[i].emissiveIntensity = dv * DIFF_EM;
+    }
+    this._overallLevel = clamp(level / 3);
+    // 環境貼圖強度（跟著日光燈亮度、腐化、濃煙、焦黑）
+    const envK = ENV_K * this._overallLevel * (1 - 0.35 * c) * smokeDim * burnDim;
+    if (Math.abs(envK - (this._envK ?? -1)) > 1e-4) {
+      this._envK = envK;
+      for (const m of this.mats.all) m.envMapIntensity = envK;
+    }
+    // 燈管兩端：腐化時發黑；啟動時燈絲先發出微弱橘光
+    const filament = this._startup ? clamp(1 - (startK[0] + startK[1] + startK[2]) / 3) * clamp((now - this._startup.t0) / 0.3) : 0;
+    this.tubeEndMat.opacity = Math.max(smoothstep(0.25, 0.9, c) * 0.85, filament * 0.9);
+    this.tubeEndMat.emissive.setRGB(1, 0.42, 0.12);
+    this.tubeEndMat.emissiveIntensity = filament * 1.6;
+    this.emergLensMat.emissiveIntensity = emerg * LENS_EM * (1 - 0.45 * s);
+    this.fillLight.color.copy(fillCol);
+    if (warm > 0.01) this.fillLight.color.lerp(AMBER, c * 0.6 * warm);
+    const fillStart = (startK[0] + startK[1] + startK[2]) / 3;
+    this.fillLight.intensity = fill * FILL_CD * fillStart * corrDim * smokeDim * burnDim;
+
+    // 防爆門外的短廊（不受光材質）：只在門口附近帶到一點點室內光
+    if (this.stubMat) {
+      const k = 0.3 * this._overallLevel + 0.12 * emerg;
+      this.stubMat.color.copy(this.roomLights[0].color).multiplyScalar(k * (1 - 0.6 * s));
+    }
+
+    // ---- 腐化貼花 ----
+    const fadeBurn = 1 - smoothstep(0.3, 0.85, b);
+    for (const d of this._decalMats) {
+      const [a0, a1] = DECAL_TIERS[d.tier] || DECAL_TIERS[3];
+      const op = smoothstep(a0, a1, c) * (DECAL_MAX[d.name] ?? 0.85) * fadeBurn;
+      d.m.opacity = op;
+    }
+    for (const d of this._decalMats) if (d.mesh) d.mesh.visible = d.m.opacity > 0.003;
+
+    // ---- 焦黑：螢幕裂痕、天花板片 ----
+    const crackOp = smoothstep(0.2, 0.7, b);
+    for (const m of this._cracks) { m.material.opacity = crackOp; m.visible = crackOp > 0.003; }
+    for (const tl of this.ceilingTiles || []) {
+      const a = smoothstep(tl.th, Math.min(1, tl.th + 0.4), b) * tl.angle;
+      if (tl.axis === 'z') tl.pivot.rotation.z = tl.sign * a; else tl.pivot.rotation.x = -tl.sign * a;
+      if (tl.kind === 'missing') {
+        const op = 1 - smoothstep(tl.th + 0.1, tl.th + 0.4, b);
+        tl.mat.opacity = op; tl.pivot.visible = op > 0.01;
+      }
+    }
+
+    // ---- 指示燈 ----
+    const live = 1 - b;
+    this.leds.update(t, { mains: power, ups: 1, upsAlarm: 1 - power }, live, reduce);
+    // CAM 頻道指示
+    const ch = this.ctx.feeds?.channel;
+    this.camLeds?.forEach((led, i) => led.set(LED_COLORS.green, (ch === i + 1 ? 1 : 0.0) * power * live));
+    // 對講機
+    let icK = 0, icC = LED_COLORS.amber;
+    if (this._intercomMode === 'ringing') icK = 0.12 + 0.88 * (0.5 - 0.5 * Math.cos((t * Math.PI * 2) / 1.2));
+    else if (this._intercomMode === 'talking') { icK = 1; icC = LED_COLORS.green; }
+    this._intercomCol.lerp(_tmpC.copy(icC).multiplyScalar(icK * live), 1 - Math.exp(-14 * dt));
+    this._applyLed(this.parts.intercom.led, this._intercomCol);
+    this.intercomRingMat.color.copy(this._intercomCol).multiplyScalar(0.7);
+    // 通風
+    let vK = 0, vC = LED_COLORS.green;
+    if (this._ventMode === 'ok') vK = 1;
+    else if (this._ventMode === 'fault') { vC = LED_COLORS.amber; vK = 0.62 + 0.38 * (0.5 + 0.5 * Math.sin((t * Math.PI * 2) / 1.6)); }
+    this._ventLedCol.lerp(_tmpC.copy(vC).multiplyScalar(vK * power * live), 1 - Math.exp(-10 * dt));
+    this._applyLed(this.parts.vent.led, this._ventLedCol);
+    let g = this._ventGauge;
+    if (g == null) {
+      g = this._ventMode === 'ok' ? 0.52 + 0.012 * Math.sin(t * 7.3) + 0.008 * Math.sin(t * 12.7)
+        : this._ventMode === 'fault' ? 0.8 + 0.06 * Math.sin((t * Math.PI * 2) / 1.7) + 0.015 * Math.sin(t * 5.1) : 0;
+    }
+    g *= power;
+    this._needle = damp(this._needle, g, 1.6, dt);
+    this.parts.vent.needle.rotation.z = 2.356 - this._needle * 4.712;
+    // 電磁鎖（市電＋門關著才亮綠）
+    this.parts.side.maglockLed.set(LED_COLORS.green, power * (this._sideOpen ? 0 : 1) * live);
+    // 手電筒充電燈
+    const flOn = this.parts.flashlight?.fl.visible;
+    this.parts.flashlight?.led.set(flOn ? LED_COLORS.green : LED_COLORS.amber, (flOn ? 0.9 : 0.0) * live);
+    // 防爆門狀態燈
+    let bk = 0.85, bc = LED_COLORS.red;
+    if (this._blastState === 'opening') { bc = LED_COLORS.amber; bk = 0.35 + 0.65 * (0.5 - 0.5 * Math.cos((t * Math.PI * 2) / 1.4)); }
+    else if (this._blastState === 'open') { bc = LED_COLORS.amber; bk = 0.5; }
+    this._blastLampCol.lerp(_tmpC.copy(bc).multiplyScalar(bk * live), 1 - Math.exp(-8 * dt));
+    this._applyLed(this.parts.blast.lamp, this._blastLampCol, 0.6);
+    // 解鎖鈕呼吸紅光（週期 2.4 秒）
+    const ug = f.unlock.update(now);
+    const breath = 0.3 + 0.7 * (0.5 - 0.5 * Math.cos((t * Math.PI * 2) / 2.4));
+    const uk = ug * breath * live;
+    this.parts.unlock.ringMat.color.setRGB(1.6 * uk, 0.08 * uk, 0.04 * uk);
+    this.parts.unlock.capMat.emissiveIntensity = 0.9 * uk;
+    this.parts.unlock.light.intensity = 0.32 * uk;
+
+    // ---- 電子鐘 ----
+    const colon = Math.floor(t * 2) % 2 === 0;
+    if (colon !== this._colonOn) {
+      this._colonOn = colon;
+      try { this.ledClock?.setColonVisible(colon); } catch (e) { /* ignore */ }
+    }
+    // 停電時 LED 鐘靠內建電池維持微弱顯示
+    const clockK = live * (0.3 + 0.7 * power);
+    this.clockFaceMat.color.setScalar(1.35 * clockK);
+    this.clockSpillMat.opacity = 0.2 * clockK * (1 - 0.5 * s);
+    // 出口燈（電池）
+    this.exitMat.emissiveIntensity = 0.85 * (1 - 0.4 * s);
+
+    // ---- 蒸氣與濃煙 ----
+    const mugVisible = this.objects.coffee.visible;
+    this.steam.update(dt, t, this._coffeeStage === 0 && mugVisible && b < 0.05, 0.6 + 0.4 * this._overallLevel);
+    // 煙色：深灰黑，只沾一點室內光的顏色
+    const tint = this._smokeTint.setRGB(0.016, 0.015, 0.014);
+    const lc = this.roomLights[0].color;
+    const lk = 0.035 * (this._overallLevel + emerg * 0.5);
+    tint.r += lc.r * lk; tint.g += lc.g * lk; tint.b += lc.b * lk;
+    this.smoke.update(dt, t, s, tint);
+
+    // ---- 筆（寫字時輕微擺動） ----
+    const pen = this.objects.pen;
+    if (pen.visible && this._penP >= 0) {
+      this._penAct = Math.max(0, this._penAct - dt * 2.5);
+      const a = this._penAct;
+      pen.position.set(
+        this._penBase.x + Math.sin(t * 29) * 0.0011 * a,
+        this._penBase.y + Math.abs(Math.sin(t * 17)) * 0.0006 * a,
+        this._penBase.z + Math.cos(t * 23) * 0.0008 * a,
+      );
+      pen.rotation.set(Math.sin(t * 2.1) * 0.015 + Math.sin(t * 19) * 0.02 * a, Math.sin(t * 1.3) * 0.02, Math.sin(t * 25) * 0.025 * a);
+    }
+  }
+
+  _applyLed(led, col, glowK = 0.35) { led?.setColor(col, glowK); }
 }
+
+const _tmpC = new THREE.Color();
