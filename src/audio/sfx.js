@@ -4,7 +4,7 @@
 // 聲音都輸出到 v.out（Voice 會處理定位與匯流排）。音量在 AudioEngine.SFX_GAIN 統一校準。
 // =============================================================================
 import { perc, asr, rand, chance, periodicWave, clamp } from './dsp.js';
-import { click, tone, ring, thud, hiss, stickSlip, coughGroup, axeHit } from './synth.js';
+import { click, tone, ring, thud, hiss, stickSlip, coughGroup, axeHit, knockSet } from './synth.js';
 
 /** 'door' IR 的能量集中在低頻：經過它的打擊聲要先壓低（量測校準）。 */
 export const DOOR_IR_GAIN = 0.35;
@@ -487,6 +487,31 @@ export const SFX = {
     tone(v, v.out, t + 0.004, 48, 0.22, 0.16, { a: 0.006 });
     v.send(v.out, 'room', 0.14);
     return 1.8;
+  },
+
+  // 監視系統「動態偵測」提示（docs/pacing/spec.md §3.2 / §6.5）：控制台 CAM 按鈕上的輕微繼電器喀噠，
+  // 接兩個低通過的柔和正弦短音（1046 → 784 Hz，起音 12 ms）。已知的設備 UI 音，不是驚嚇音；座位上峰值 ≤ -28 dBFS。
+  vmdTone(v, t) {
+    const lp = v.bq('lowpass', 2400, 0.7);
+    v.chain(lp, v.out);
+    click(v, lp, t, { f: 1800, Q: 1.2, peak: 0.12, tc: 0.003 });
+    tone(v, lp, t + 0.09, 1046, 0.05, 0.035, { a: 0.012 });
+    tone(v, lp, t + 0.25, 784, 0.045, 0.045, { a: 0.012 });
+    v.send(v.out, 'room', 0.12);
+    return 0.8;
+  },
+
+  // 02:05：隔著防爆門、戴手套的拳頭輕輕敲門（低通 520 Hz ＋ 'door' 捲積；第一下較輕 0.7×）。
+  // o: { count = 3, amp = 1 }。只有這個聲音，不疊任何提示音；座位上峰值 ≤ -28 dBFS。
+  doorKnock(v, t, o = {}) {
+    const amp = Number.isFinite(Number(o.amp)) ? Number(o.amp) : 1;
+    const count = Math.max(1, Math.round(Number(o.count) || 3));
+    const pre = v.g(1);
+    v.chain(pre, v.bq('lowpass', 520, 0.7), v.conv('door'), v.g(DOOR_IR_GAIN), v.out);
+    knockSet(v, pre, t, { count: 1, amp: 0.7 * amp });
+    if (count > 1) knockSet(v, pre, t + 0.3, { count: count - 1, spacing: 0.3, amp });
+    v.send(v.out, 'room', 0.12);
+    return 2.2;
   },
 };
 

@@ -43,7 +43,11 @@
  *  'staticBurst'   中等音量的雜訊爆音（快速淡出）
  *  'cough'         悶在面罩裡的咳嗽
  *  'doorThud'      門外破門斧劈在鋼門上的悶響（隔著厚鋼門，低沉、被包住，不可尖銳）
- * opts: { position?: THREE.Vector3（3D 定位，HRTF）, gain?: number, duration?: number }
+ *  'vmdTone'       監視系統「動態偵測」提示：輕微繼電器喀噠＋兩個柔和短音（1046 → 784 Hz，低通 2.4 kHz）；
+ *                  position = 該頻道的 CAM 按鈕（points.camButtons[n-1]）。座位上峰值 ≤ -28 dBFS
+ *  'doorKnock'     02:05 隔著防爆門的悶悶敲門聲（低通 520 Hz ＋ 'door' 殘響）；opts.count（預設 3）、opts.amp（預設 1）。
+ *                  position = points.blastDoor。座位上峰值 ≤ -28 dBFS
+ * opts: { position?: THREE.Vector3（3D 定位，HRTF）, gain?: number, duration?: number, count?: number, amp?: number }
  */
 import { makeNoiseBuffer, makeImpulseResponse, glide, follow, dbToGain, clamp, rand, toPos } from './dsp.js';
 import { Voice } from './Voice.js';
@@ -64,6 +68,9 @@ export const SFX_GAIN = {
   doorCreak: 0.32, pneumaticHiss: 0.19, heavySlide: 0.097, paper: 0.23, mug: 0.127, metalTick: 0.2, carPass: 0.098,
   breaker: 0.094, fanSpinUp: 0.097, fanSpinDown: 0.106, penScratch: 0.17, bodySlump: 0.134, flashlight: 0.41,
   crtBoot: 0.135, staticBurst: 0.46, cough: 0.19, doorThud: 0.1,
+  // 監控節奏重整（spec §6.5）：刻意比其他音效安靜（座位上、音量 1.0 實測峰值：vmdTone ≈ -31 dBFS、doorKnock ≈ -30.5 dBFS（隨機最大 ≈ -29.6）；
+  // 上限 -28 dBFS；作為對照 button ≈ -26、camSwitch ≈ -24、doorThud ≈ -33；監控時環境音 RMS ≈ -37 dBFS）
+  vmdTone: 0.5, doorKnock: 0.24,
 };
 const FOOT_GAIN = 0.18;
 const AMB_GAIN = { drip: 0.2, pipeTick: 0.32, groan: 0.08 };
