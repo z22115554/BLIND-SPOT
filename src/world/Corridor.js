@@ -289,6 +289,8 @@ export class Corridor {
     M.roadLines = T.material('roadLines', { transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
     M.walk = T.material('concrete', { repeat: [1 / 1.2, 1 / 1.2], color: 0x85857f });
     M.curbPaint = new S({ color: 0xa8a28c, roughness: 0.8 });
+    // 玻璃外的路面不受廊道濃霧影響（霧是廊道裡的煙；只透過玻璃看得到的車道若也套用，3 m 外就全黑了）
+    for (const k of ['asphalt', 'roadLines', 'walk', 'curbPaint']) M[k].fog = false;
     M.tiles = T.material('tunnelTiles');
     M.arch = T.material('concreteDark', { color: 0x5c5a57 });
     M.lampHousing = new S({ color: 0x55585a, roughness: 0.6, metalness: 0.5 });
@@ -384,7 +386,11 @@ export class Corridor {
     this.silhouette.visible = true;
     this._syncSilhouette();
     // 手電筒暫時調暗（PlayerController.setFlashlightDim；不存在就略過），讓光斑讀得出來
-    try { if (ctx.player?.setFlashlightDim) { ctx.player.setFlashlightDim(TU.flashlightDim, rise * 0.85); this._hl.dimmed = true; } } catch (e) { console.warn('[corridor] setFlashlightDim failed', e); }
+    // 只有面向東（光斑那一側）時才明顯調暗；背對（面向西、倒退走）時光斑在身後，手電筒只略暗一點，
+    // 免得畫面無緣無故變黑。調暗的時間與光斑漸強一樣長（兩者互補，整體亮度幾乎不變）。
+    const fx = ctx.camera ? ctx.camera.getWorldDirection(_c1).x : 1;
+    const dimTo = TU.flashlightDim + (0.85 - TU.flashlightDim) * smooth(0.35, -0.45, fx);
+    try { if (ctx.player?.setFlashlightDim) { ctx.player.setFlashlightDim(dimTo, rise); this._hl.dimmed = true; } } catch (e) { console.warn('[corridor] setFlashlightDim failed', e); }
     try { ctx.audio?.sfx?.('carPass', { position: new THREE.Vector3(fd.x, fd.glass.y, fd.z) }); } catch (e) { console.warn('[corridor] carPass sfx failed', e); }
     if (ctx.debug) console.info('[corridor] headlights', JSON.stringify({ px: +px.toFixed(2), pz: +pz.toFixed(2), vx: +vx.toFixed(2), tA: +tA.toFixed(2), xpA: +xpA.toFixed(2), xcA: +xcA.toFixed(2), xc0: +xc0.toFixed(2), v: +v.toFixed(2), soft: +soft.toFixed(2), D: +D.toFixed(2) }));
     return ctx.clock.tween(D, (e, k) => { if (this._hl.run === run) this._hlFrame(k * D, plan); }, 'linear')

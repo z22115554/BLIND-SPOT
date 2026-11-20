@@ -345,8 +345,10 @@ export function buildStructure(ctx, root, mats, d) {
     [fd.x, 0.78, lz1 + 0.002], 0.3, 0.094, [0, 0, 0], out, { rough: 0.45, metal: 0.6 }, SB);
   // 夾絲強化玻璃（objects.fireDoorGlass）：幾乎透明的暗色玻璃——貼圖的 alpha 只在鐵絲網、污垢、煙燻處較高，
   // 所以手電筒只照亮鐵絲與污垢（不會變成一塊發亮的綠色磁磚），外面的車道、鈉燈與灰燼看得見。
-  const glassMat = new THREE.MeshStandardMaterial({
-    map: TX.wiredGlassTexture(), color: 0xffffff, transparent: true, opacity: 1, roughness: 0.5, metalness: 0.0,
+  // 底層只有漫反射（Lambert、無鏡面）：手電筒與它的反彈補光（就在玻璃前面）不會在玻璃上打出一大團白霧；
+  // 鏡面反光只由下面那層很光滑、很淡的加算光澤負責（一兩個銳利的小亮點）。
+  const glassMat = new THREE.MeshLambertMaterial({
+    map: TX.wiredGlassTexture(), color: 0x5a625e, transparent: true, opacity: 1,
     depthWrite: false, side: THREE.FrontSide,
   });
   glassMat.name = 'fireDoorGlass';
@@ -359,7 +361,7 @@ export function buildStructure(ctx, root, mats, d) {
   out.glass = glass;
   // 玻璃表面的鏡面光澤（加算、無漫反射）：只剩手電筒在玻璃上的柔和反光點
   const sheenMat = new THREE.MeshStandardMaterial({
-    color: 0x000000, roughness: 0.12, metalness: 0.0, transparent: true, opacity: 0.14, depthWrite: false,
+    color: 0x000000, roughness: 0.035, metalness: 0.0, transparent: true, opacity: 0.05, depthWrite: false,
     blending: THREE.AdditiveBlending, envMap: mats.wetEnv || null, envMapIntensity: 0,
   });
   sheenMat.name = 'fireDoorGlassSheen';

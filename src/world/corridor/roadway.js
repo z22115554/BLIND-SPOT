@@ -19,7 +19,8 @@ export function roadwayDims(LAYOUT) {
     walkS: { z0: wallFace - 0.95, h: 0.18 }, walkN: { z1: R.minZ + 1.0, h: 0.18 },
     laneZ: R.laneZ, wallTop: 3.4, crown: R.height,
     lanes: { z0: R.minZ + 1.05, z1: R.minZ + 1.05 + 7.4 },
-    sodium: new THREE.Vector3(26.5, 4.55, R.minZ + 0.45),
+    // 唯一還亮著的鈉燈：在防火門東邊 3.5 m 的那座燈具（從玻璃往右上方看得到它）
+    sodium: new THREE.Vector3(C.fireDoor.x + 3.5, 4.55, R.minZ + 0.45),
   };
 }
 
@@ -120,8 +121,12 @@ export function buildRoadway(ctx, root, mats, d) {
     const s = d.sodium;
     const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.84, 0.03, 0.15), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.5, 0.14).multiplyScalar(5) }));
     lamp.position.set(s.x, d.wallTop + 0.665, zN + 0.2); root.add(lamp);
-    const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: TX.haloTexture([255, 160, 70], { falloff: 4.2 }), color: 0xffa050, transparent: true, opacity: 0.2, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }));
+    const haloTex = TX.haloTexture([255, 160, 70], { falloff: 4.2 });
+    const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: haloTex, color: 0xffd090, transparent: true, opacity: 0.16, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }));
     halo.scale.set(5.0, 3.8, 1); halo.position.set(s.x, d.wallTop + 0.6, zN + 1.7); root.add(halo);
+    // 玻璃正前方的煙：被鈉燈照成很淡的琥珀色（讓窗外讀得出「充滿煙的空間」，而不是一片死黑）
+    const haze = new THREE.Sprite(new THREE.SpriteMaterial({ map: haloTex, color: 0xffc488, transparent: true, opacity: 0.06, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }));
+    haze.scale.set(9, 5.5, 1); haze.position.set(ctx.LAYOUT.CORRIDOR.fireDoor.x + 1.5, 2.2, zS - 5.2); root.add(haze);
     // 鈉燈投在北牆與路面的光（加算光斑；只有靜態的一盞，不必用真實光源）
     const poolMat = new THREE.MeshBasicMaterial({ map: TX.haloTexture([255, 140, 50], { falloff: 3.2 }), transparent: true, opacity: 0.5, depthWrite: false, blending: THREE.AdditiveBlending, fog: true, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
     const wallPool = new THREE.Mesh(new THREE.PlaneGeometry(6, 3.3), poolMat);
@@ -133,13 +138,13 @@ export function buildRoadway(ctx, root, mats, d) {
 
   // 灰燼：集中在玻璃看得到的範圍，近處較密
   {
-    const N = 500, r = rng(4242);
+    const N = 800, r = rng(4242);
     const pos = new Float32Array(N * 3), seed = new Float32Array(N * 4);
     const yMin = 0.0, yMax = 5.6, fdx = (ctx.LAYOUT.CORRIDOR.fireDoor.x);
     for (let i = 0; i < N; i++) {
       const depth = Math.pow(r(), 1.4) * 7.4 + 0.15;              // 距玻璃的深度（更遠的都被霧吃掉了）
       const z = zS - depth;
-      const spread = 0.9 + depth * 0.95;
+      const spread = 0.7 + depth * 0.75;                             // 集中在玻璃看得到的視錐裡
       pos[i * 3] = fdx + (r() - 0.5) * 2 * spread;
       pos[i * 3 + 1] = yMin + r() * (yMax - yMin);
       pos[i * 3 + 2] = z;
@@ -191,11 +196,11 @@ export function buildRoadway(ctx, root, mats, d) {
     // （燈數不變：場景裡始終是這兩盞 SpotLight。）
     {
       const sl = out.hl[1], s = d.sodium;
-      sl.color.setRGB(1.0, 0.5, 0.17);
+      sl.color.setRGB(1.0, 0.56, 0.22);
       sl.position.set(s.x, d.wallTop + 0.55, zN + 0.6);
-      sl.target.position.set(s.x - 5.9, 0, zS - 3.4);
+      sl.target.position.set(ctx.LAYOUT.CORRIDOR.fireDoor.x + 0.3, 0, zS - 4.2);   // 照亮玻璃正前方那段車道
       sl.angle = 0.7; sl.penumbra = 0.85; sl.distance = 12.2; sl.decay = 2;
-      sl.intensity = 330;
+      sl.intensity = 950;
       sl.name = 'roadSodium';
       out.sodiumLight = sl;
     }
