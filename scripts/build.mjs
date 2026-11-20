@@ -1,5 +1,6 @@
 // 打包：src/main.js（含 three.js）→ 單一自足 HTML：dist/blind-spot.html
 // 產出的檔案不依賴任何外部資源，可直接雙擊以 file:// 開啟。
+// 不帶 --out 時同時寫出根目錄 index.html（GitHub Pages 由分支根目錄部署，內容與 dist/blind-spot.html 相同）。
 import * as esbuild from 'esbuild';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -40,4 +41,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   const oi = process.argv.indexOf('--out');
   const { out, bytes } = await writeHtml(js, oi > 0 ? process.argv[oi + 1] : null);
   console.log(`built ${path.relative(root, out)}  ${(bytes / 1024).toFixed(0)} KB  in ${Date.now() - t0} ms`);
+  if (oi < 0 && !process.argv.includes('--no-pages')) {
+    const pages = await writeHtml(js, path.join(root, 'index.html'));
+    console.log(`built ${path.relative(root, pages.out)}  (GitHub Pages)`);
+  }
 }
