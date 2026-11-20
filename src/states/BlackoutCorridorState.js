@@ -163,7 +163,10 @@ export class BlackoutCorridorState extends StoryState {
       T(() => ctx.audio?.setHeartbeat?.(86, 0.72, 1.2));
       this.wait(7).then(() => {
         this._hbRaised = false;
-        T(() => ctx.audio?.setHeartbeat?.(f.powerRestored ? 56 : 62, f.powerRestored ? 0.22 : 0.38, 6));
+        // 依玩家「現在」所在的區域回到該區的心跳（7 秒內可能已經走回主控室：不能用廊道的值蓋掉主控室的）
+        const inCorr = CORRIDOR_ZONES.includes(this._zone);
+        const [bpm, lvl] = f.powerRestored ? [56, 0.22] : inCorr ? [62, 0.38] : [70, 0.55];
+        T(() => ctx.audio?.setHeartbeat?.(bpm, lvl, 6));
       });
     }
     // 保險：區域事件可能在進入本狀態前就已發生
