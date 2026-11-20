@@ -1,13 +1,13 @@
 // =============================================================================
 // TouchControls — 手機／平板的觸控操作（只在觸控模式 ctx.input.touch 時作用；桌機完全不受影響）
 // -----------------------------------------------------------------------------
-// * 環顧：在畫面上（不是介面元件的地方）拖曳。弧度/像素 = 1.25 × 垂直視角 ÷ 視窗高度（「抓住畫面」的手感，
-//   橫向與直向一致）× 設定的靈敏度；直接套用、沒有慣性、沒有吸附；俯仰限制與滑鼠相同（PlayerController.lookBy）。
+// * 環顧：在畫面上（不是介面元件的地方）拖曳，方向同滑鼠（手指往右＝轉向右，行動 FPS 慣例）。
+//   弧度/像素 = 1.25 × 垂直視角 ÷ 視窗高度（橫向與直向手感一致）× 設定的靈敏度；直接套用、沒有慣性、沒有吸附；俯仰限制與滑鼠相同（PlayerController.lookBy）。
 // * 移動：浮動虛擬搖桿——拇指落在左側區域（橫向：左 40%；直向：左半、下半）時在落點出現；類比、死區 20%；
 //   手指拉超過 1.5 倍半徑時底座跟著滑過去。只有玩家能移動時才會出現（PlayerController.canMove()：
 //   劇情過場、檢視、暫停時不出現，該區域的觸控改為環顧）；坐著時推動搖桿＝按下移動鍵（平滑站起後才走）。
 //   能移動時左下角有一個很淡的提示圈。多點觸控：搖桿＋環顧可同時進行。
-// * 互動：短按（< 0.45 秒、位移 < 10 px）＝點擊 → Interaction.tapAt（點到的可互動物件；含容錯環）；
+// * 互動：短按（< 0.45 秒（事件時間戳）、位移 < 10 px）＝點擊 → Interaction.tapAt（點到的可互動物件；含容錯環）；
 //   拖曳永遠不會觸發互動。底部互動提示本身是按鈕（UI.js）。
 // * 檢視畫面開啟時：拖曳＝旋轉物件（InspectView.nudge）、在面板外點一下＝關閉；面板內文以手指捲動；✕ 關閉鈕。
 // * 暫停鈕：右上角（安全區內）44 px 觸控範圍，開啟既有的暫停/設定畫面。標題、結局選擇、名單、暫停中不顯示。
@@ -21,11 +21,12 @@ import { injectStyle, uiRoot, el } from './uiCommon.js';
 
 const TAP_SLOP = 10;          // px：超過就是拖曳
 const TAP_MS = 450;           // 長於此不算點擊
-const LOOK_GAIN = 1.25;       // 1 = 手指拖多少畫面就跟著轉多少
+const LOOK_GAIN = 1.25;       // 1 = 拖過整個畫面高度＝轉過整個垂直視角
 const STICK_DEAD = 0.2;
 const STICK_FOLLOW = 1.5;     // 手指超過半徑的倍數時底座跟著移動
 const PORTRAIT_MIN_HFOV = 62; // 度
 const PORTRAIT_MAX_VFOV = 100;
+const evTime = (e) => { const t = Number(e?.timeStamp); return t > 0 && t < performance.now() + 1000 ? t : performance.now(); };
 const SCROLLERS = '.bs-title, .bs-pause, .bs-insp__body, .bs-end, .bs-error, input, label';
 
 const CSS = `
@@ -123,6 +124,8 @@ export class TouchControls {
     this.lookId = null;
     this._baseFov = ctx.camera?.fov || 70;
     this._vis = { ghost: null, pause: null };
+    // 測試用：?tapms=N 放寬點擊時間（SwiftShader 下每個觸控事件要等一幀才送達）
+    this._tapMs = Number(ctx.params?.get?.('tapms')) || TAP_MS;
 
     injectStyle('bs-touch-style', CSS);
     const root = uiRoot();
@@ -234,7 +237,8 @@ export class TouchControls {
     if (e.cancelable) e.preventDefault();
     try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch (err) { /* ignore */ }
     const x = e.clientX, y = e.clientY;
-    const p = { role: 'tap', x0: x, y0: y, x, y, t0: performance.now(), moved: 0 };
+    // 時間用事件的 timeStamp（主執行緒忙碌、事件晚一點才處理時，點擊仍然算點擊）
+    const p = { role: 'tap', x0: x, y0: y, x, y, t0: evTime(e), moved: 0 };
     if (!this.stick && !this.ctx.inspect?.isOpen && this._canMove() && this._stickZone(x, y)) {
       p.role = 'stick';
       this.stick = { id: e.pointerId, cx: x, cy: y, kx: 0, ky: 0 };
@@ -283,7 +287,7 @@ export class TouchControls {
     if (e.cancelable) e.preventDefault();
     if (p.role === 'stick') this._releaseStick();
     if (this.lookId === e.pointerId) this.lookId = null;
-    if (ok && p.moved < TAP_SLOP && performance.now() - p.t0 < TAP_MS) this._tap(p.x, p.y, e);
+    if (ok && p.moved < TAP_SLOP && evTime(e) - p.t0 < this._tapMs) this._tap(p.x, p.y, e);
   }
 
   _tap(x, y, e) {
