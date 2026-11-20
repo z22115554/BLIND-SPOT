@@ -29,7 +29,10 @@ const PAN_DUR = 7.5;          // 由門口掃回控制台
 const FADE_OUT = 2.4;         // 最後淡到接近全黑
 const FADE_FLOOR = 0.95;      // 「接近全黑」：回到桌面的鏡頭在這個亮度下切換
 const RETURN_FADE = 3.4;      // 回到桌面時淡入
-const BURN_RECEDE = 3.2;      // 焦黑退去
+const BURN_RECEDE = 5.2;      // 焦黑退去
+// 焦黑退去的時間表（[秒, burnt]，線性）：天花板/遠處很快退掉；佔畫面大半的桌面（burnt ≈ 0.65 → 0.3）慢慢退，
+// 否則整個畫面會在 0.25 秒內變亮一倍以上（焦黑 albedo ≈ 0.06 → 乾淨桌面 ≈ 0.3）。
+const RECEDE_KEYS = [[0, 1], [0.9, 0.68], [4.4, 0.28], [5.2, 0]];
 
 // ---- 煙／焦黑／後期的時間表（秒，從防爆門開始轉動手輪起算；[t, 值]，段間餘弦緩動） ----
 // 門開到 30%（1.35 s）煙開始湧入 → 6.3 s 時天花板煙層成形 → 一路下沉 → 最後一句時才變得很濃。
@@ -51,6 +54,15 @@ function curve(keys, t) {
       const k = (t - t0) / Math.max(1e-6, t1 - t0);
       return v0 + (v1 - v0) * (0.5 - 0.5 * Math.cos(Math.PI * k));
     }
+  }
+  return keys[keys.length - 1][1];
+}
+/** 關鍵格插值（線性）。 */
+function linear(keys, t) {
+  if (t <= keys[0][0]) return keys[0][1];
+  for (let i = 1; i < keys.length; i++) {
+    const [t1, v1] = keys[i];
+    if (t <= t1) { const [t0, v0] = keys[i - 1]; return v0 + (v1 - v0) * (t - t0) / Math.max(1e-6, t1 - t0); }
   }
   return keys[keys.length - 1][1];
 }
@@ -214,13 +226,17 @@ export class EndingLoopState extends StoryState {
     this.fadeTo(0, RETURN_FADE, 'inOut');
     this.postTo('smoke', 0, 2.6, 'inOut');
     T(() => cr?.setSmoke?.(0, { duration: 3.4 }));
-    this.wait(1.1).then(() => {
+    this.wait(0.6).then(() => {
       if (!this.alive) return;
-      T(() => cr?.setBurnt?.(0, { duration: BURN_RECEDE }));
-      T(() => cr?.setLighting?.('normal', { duration: BURN_RECEDE + 0.4 }));
-      this.tween(BURN_RECEDE + 0.4, (e) => { if (ctx.feeds) ctx.feeds.brightness = 0.12 + 0.88 * e; }, 'inOut');
+      this.tween(BURN_RECEDE, (e) => { T(() => cr?.setBurnt?.(linear(RECEDE_KEYS, e * BURN_RECEDE), { duration: 0 })); }, 'linear');
     });
-    await this.wait(3.4);
+    // 燈光回到正常（橘紅 → 日光燈）晚一點開始，不與淡入、焦黑退去的亮度變化疊在同一刻
+    this.wait(1.5).then(() => {
+      if (!this.alive) return;
+      T(() => cr?.setLighting?.('normal', { duration: BURN_RECEDE }));
+      this.tween(BURN_RECEDE, (e) => { if (ctx.feeds) ctx.feeds.brightness = 0.12 + 0.88 * e; }, 'inOut');
+    });
+    await this.wait(4.6);
     // 舞台指示先出現（筆開始寫之前就淡出）
     T(() => ctx.subtitles?.show?.(ctx.SCRIPT.endingWriting, { style: 'direction' }));
     await this.wait(1.8);

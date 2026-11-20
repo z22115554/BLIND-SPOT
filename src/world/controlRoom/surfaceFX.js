@@ -105,7 +105,7 @@ float sfxCrack = 0.0;
     // 由防爆門往房內蔓延（距離項）＋由上往下（高度項）＋斑駁（噪音項）
     float dN = clamp( distance( vSfxPos, uBurnOrigin ) / 9.0, 0.0, 1.0 );
     float thr = 0.30 * nLo + 0.14 * nHi + 0.16 * ( 1.0 - h ) + 0.45 * dN;
-    sfxBurn = smoothstep( thr - 0.03, thr + 0.03, uBurnt * 1.12 );
+    sfxBurn = smoothstep( thr - 0.05, thr + 0.05, uBurnt * 1.12 );
     // 燃燒前緣：比剝落過渡帶更窄的一條暗橘線
     // 燃燒前緣：焦黑邊界外側一條柔和、斷續的暗紅悶燒帶（不是一條亮線）
     float e0 = smoothstep( thr - 0.035, thr + 0.035, uBurnt * 1.12 );
