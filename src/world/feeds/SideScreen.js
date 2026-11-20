@@ -96,10 +96,10 @@ export class SideScreen {
     this.material.uniforms.uCursor.value.set(cx0 / w, 1 - (cy + ch / 2) / h, (cx0 + cw) / w, 1 - (cy - ch / 2) / h);
   }
 
-  /** on: 0/1 目標；平滑淡入淡出（≥ 0.5 秒）。snow: 0/1 目標（文字 ↔ 雪花，約 1.2 秒交叉淡化；光敏感模式更慢） */
+  /** on: 0/1 目標；平滑淡入淡出（≥ 0.5 秒）。snow: 0/1 目標（文字 ↔ 雪花，約 1.6 秒交叉淡化；光敏感模式更慢） */
   update(dt, t, { on = 1, reduceFlicker = false, brightness = 1, snow = 0 } = {}) {
     this.on = damp(this.on, on, 4.5, dt);
-    this.snow = damp(this.snow, snow, reduceFlicker ? 1.3 : 2.0, dt);
+    this.snow = damp(this.snow, snow, reduceFlicker ? 1.0 : 1.4, dt);
     const u = this.material.uniforms;
     u.uOn.value = this.on;
     u.uSnow.value = this.snow;
