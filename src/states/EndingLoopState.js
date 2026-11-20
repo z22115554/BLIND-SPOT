@@ -104,6 +104,7 @@ export class EndingLoopState extends StoryState {
     T(() => a?.sfx?.('heavySlide', { duration: DOOR_OPEN, position: P.blastDoor }));
     const door = T(() => cr.openBlastDoor(DOOR_OPEN));
     setBlastDoorFlag(ctx, true);       // GazeSystem / Interaction 的結構遮蔽判定
+    this.hideCorridor(true);           // 終幕不會再看到廊道：省下牆後約 80 個 draw call
     this._thuds = false;
     T(() => ctx.feeds?.setHDAction?.(false));
     // 煙／焦黑／後期的時間表由 tick() 依遊戲時間推進
@@ -343,8 +344,29 @@ export class EndingLoopState extends StoryState {
     if (this._choiceShown && ctx.postfx?.params) ctx.postfx.params.fade = 1;
   }
 
+  /**
+   * 終幕（開門之後）玩家不會離開主控室、也不會再望向側門：把廊道整組（牆後、仍在視錐內的合併幾何、線索物件、主車道）
+   * 暫時不繪製。只隱藏「不含光源」的子樹 —— 場景中的光源數量不變（不會重新編譯著色器）。exit() 時還原。
+   */
+  hideCorridor(on) {
+    const g = this.ctx.corridor?.group;
+    if (on) {
+      if (!g || this._coHidden) return;
+      this._coHidden = [];
+      for (const c of g.children) {
+        let lit = false;
+        c.traverse((o) => { if (o.isLight) lit = true; });
+        if (!lit && c.visible) { c.visible = false; this._coHidden.push(c); }
+      }
+    } else if (this._coHidden) {
+      for (const c of this._coHidden) c.visible = true;
+      this._coHidden = null;
+    }
+  }
+
   exit() {
     const ctx = this.ctx;
+    this.hideCorridor(false);
     this._thuds = false;
     this._tl = null;
     this._choiceShown = false;

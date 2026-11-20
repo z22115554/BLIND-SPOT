@@ -147,7 +147,12 @@ function buildNorthWall(room) {
     const tex = LT.spineTexture(b[0], b[1], i + 3);
     const side = mats.make({ color: new THREE.Color(b[1]).multiplyScalar(1.4), roughness: 0.6 }, 'cr:binder');
     const spine = mats.make({ map: tex, roughness: 0.6 }, 'cr:spine');
-    const m = new THREE.Mesh(new THREE.BoxGeometry(0.058, 0.31, 0.25), [side, side, side, side, spine, side]);
+    // 五個側面合成一個 group（2 個 draw call／本，而不是 6 個）：BoxGeometry 面序 px nx py ny pz nz → px nx py ny nz | pz
+    const bg = new THREE.BoxGeometry(0.058, 0.31, 0.25);
+    const src = bg.index.array, ord = [0, 1, 2, 3, 5, 4], idx = [];
+    for (const f of ord) for (let k = 0; k < 6; k++) idx.push(src[f * 6 + k]);
+    bg.setIndex(idx); bg.clearGroups(); bg.addGroup(0, 30, 0); bg.addGroup(30, 6, 1);
+    const m = new THREE.Mesh(bg, [side, spine]);
     m.position.set(bx + 0.029, sy + 0.011 + 0.155, L.minZ + 0.14);
     m.rotation.z = i === 6 ? 0.22 : (i % 2 ? 0.01 : -0.012);
     if (i === 6) m.position.x += 0.04, m.position.y -= 0.01;
