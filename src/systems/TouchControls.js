@@ -87,7 +87,7 @@ html.bs-touch .bs-check { width: 1.35em; height: 1.35em; }
 html.bs-touch .bs-insp__head { position: relative; padding-right: 3.8em; }
 html.bs-touch .bs-insp__x { display: grid; place-items: center; position: absolute; top: 50%; right: 0.5em; transform: translateY(-50%);
   width: 44px; height: 44px; margin: 0; padding: 0; border: 0; background: transparent; color: var(--bs-fg);
-  font: 16px/1 var(--bs-ui); opacity: 0.72; cursor: pointer; transition: opacity 0.4s ease; }
+  font: 16px/1 var(--bs-ui); opacity: 0.72; cursor: pointer; transition: opacity 0.4s ease, color 0.4s ease; }
 html.bs-touch .bs-insp__x:active { opacity: 1; color: var(--bs-accent); }
 html.bs-touch .bs-insp__panel { right: calc(max(2em, 5vw) + env(safe-area-inset-right, 0px)); }
 @media (max-width: 760px), (max-aspect-ratio: 1/1) {
@@ -160,9 +160,10 @@ export class TouchControls {
     for (const t of ['touchstart', 'touchmove', 'touchend']) cv.addEventListener(t, (e) => { if (e.cancelable) e.preventDefault(); }, pOpts);
 
     // 全頁：iOS 雙指縮放、長按選單、頁面回彈（可捲動的介面例外）
-    for (const t of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(t, (e) => e.preventDefault(), pOpts);
+    // （只在觸控模式：桌機 Safari 的觸控板縮放手勢也是 gesture* 事件，桌機行為不變）
+    for (const t of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(t, (e) => { if (this.touch) e.preventDefault(); }, pOpts);
     document.addEventListener('touchmove', (e) => {
-      if (!e.cancelable) return;
+      if (!e.cancelable || !this.touch) return;
       if (e.touches && e.touches.length > 1) { e.preventDefault(); return; }
       if (!e.target?.closest?.(SCROLLERS)) e.preventDefault();
     }, pOpts);
