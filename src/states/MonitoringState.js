@@ -37,7 +37,8 @@ import { MonitoringDirector, GATE_LIMITS, mulberry32 } from './monitoringDirecto
 const VENT_DYING_SECONDS = 40;
 const LOCK_DUR = 2.4;        // cr.setBlastLocked：手輪 2.5 圈（0.7 × 2.4 ≈ 1.7 s）→ 鎖栓入位（0.7 s）
 const LOCK_BOLTS_AT = 1.7;   // 鎖栓開始入位：unlatch ＋ pneumaticHiss
-const PACE_LOG_KINDS = new Set(['alert', 'gate', 'knock', 'ventDying', 'vacuum', 'seenMove', 'callStart']);
+// lockDone / leverDone：玩家完成閘門動作的那一刻（之前一直有事做，不算空檔）
+const PACE_LOG_KINDS = new Set(['alert', 'gate', 'knock', 'ventDying', 'vacuum', 'seenMove', 'callStart', 'lockDone', 'leverDone']);
 
 export class MonitoringState extends StoryState {
   async enter(data = {}) {
@@ -164,6 +165,7 @@ export class MonitoringState extends StoryState {
     f.blastLocked = true;
     f.lockPending = false;
     f.blastLocking = false;
+    this.plog('lockDone');
     T(() => pushLog(ctx, ctx.SCRIPT.status.lockLog(f.clockText)), 'lockLog');
     setRight(ctx, 'normal', 'normal');
     setObjective(ctx, 'monitor');
@@ -192,6 +194,7 @@ export class MonitoringState extends StoryState {
     T(() => a?.sfx?.('lever', { position: P.vent }));
     await this.guard(Promise.resolve(T(() => ctx.controlRoom.pullVentLever()) || null));
     ctx.flags.ventCut = true;
+    this.plog('leverDone');
     // 【補充文案】SYS LOG：02:05 主排風 手動操作（第三幕揭露：其實是手動切斷）
     if (this.pf.pace) T(() => pushLog(ctx, ctx.SCRIPT.status.ventManualLog(ctx.flags.clockText)), 'ventManualLog');
     T(() => a?.sfx?.('fanSpinUp', { position: P.vent, gain: 0.8 }));
