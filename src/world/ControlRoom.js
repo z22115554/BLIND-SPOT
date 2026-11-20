@@ -44,7 +44,7 @@ const MODES = {
   normal: { pos: 'F', I: [1, 1, 1], col: '#dbeee4', tube: [1, 1, 1, 1, 1, 1], diff: [1, 1, 1], emerg: 0, fill: 1, fillCol: '#a7beb6', power: 1, warm: 1 },
   emergency: { pos: 'E', I: [1, 1, 1], col: '#ff1c0a', tube: [0, 0, 0, 0, 0, 0], diff: [0, 0, 0], emerg: 1, fill: 0.3, fillCol: '#ff2410', power: 0, warm: 0 },
   restored: { pos: 'F', I: [0.56, 0.55, 0.3], col: '#ffd9a6', tube: [0.56, 0.56, 0.55, 0.55, 0.52, 0], diff: [0.56, 0.55, 0.3], emerg: 0, fill: 0.55, fillCol: '#d9b68e', power: 1, warm: 1 },
-  ending: { pos: 'F', I: [0.62, 0.54, 0.4], col: '#ff7a2e', tube: [0.16, 0.14, 0.12, 0.1, 0.08, 0], diff: [0.16, 0.12, 0.08], emerg: 0.7, fill: 0.55, fillCol: '#ff6a26', power: 1, warm: 0 },
+  ending: { pos: 'F', I: [0.62, 0.54, 0.4], col: '#ff7a2e', tube: [0.16, 0.14, 0.12, 0.1, 0.08, 0], diff: [0.16, 0.12, 0.08], emerg: 0.7, fill: 0.55, fillCol: '#ff6a26', power: 1, warm: 0, fire: 1 },
 };
 // 日光燈啟動：幾次緩慢、低振幅的明暗起伏（每段 ≥ 0.35 秒，0.25 秒內變化 < 30%）
 const STARTUP_KEYS = [[0, 0], [0.12, 0.22], [0.24, 0.08], [0.4, 0.38], [0.52, 0.2], [0.7, 0.62], [0.8, 0.5], [1, 1]];
@@ -58,11 +58,14 @@ const SMOKE_LAYER_Y = [[0, 3.2], [0.06, 2.95], [0.3, 2.3], [0.55, 1.95], [0.78, 
 // 煙層每公尺消光係數
 const SMOKE_LAYER_K = [[0, 0], [0.05, 0], [0.22, 0.6], [0.55, 0.8], [0.8, 0.95], [1, 1.45]];
 const SMOKE_ALBEDO = 2.2;       // 煙被室內光照亮的程度（乘在光源強度上）
-const SMOKE_DESAT = 0.78;       // 煙色往亮度去飽和的比例（0 = 光源原色）
+const SMOKE_DESAT = 0.86;       // 煙色往亮度去飽和的比例（0 = 光源原色）
 const SMOKE_K_SPOT = 0.0065;    // 每盞日光燈（cd）對煙色的貢獻
 const SMOKE_K_FILL = 0.011;     // 補光（cd）對煙色的貢獻
 const SMOKE_FLOOR = new THREE.Color(0.006, 0.0048, 0.0038);
-const EMBER_MAX = 0.42;         // 焦黑龜裂的餘燼光（線性 HDR）
+const EMBER_MAX = 0.36;         // 焦黑龜裂的餘燼光（線性 HDR）
+// 終幕火光：補光（PointLight）移到防爆門內側、變成橘紅色，隨焦黑出現/退去（場景光源數量不變）
+const FIRE_CD = 15;
+const FIRE_COL = new THREE.Color('#ff6418');
 
 /** 顏色過渡器 */
 class ColorFader {
@@ -153,7 +156,7 @@ export class ControlRoom {
     // ---- 狀態 ----
     this._f = {
       corruption: new Fader(0), burnt: new Fader(0), smoke: new Fader(0), unlock: new Fader(0),
-      fill: new Fader(0), emerg: new Fader(0), power: new Fader(1), warm: new Fader(1),
+      fill: new Fader(0), emerg: new Fader(0), power: new Fader(1), warm: new Fader(1), fire: new Fader(0),
       tube: [0, 1, 2, 3, 4, 5].map(() => new Fader(0)), diff: [0, 1, 2].map(() => new Fader(0)),
       lightI: [0, 1, 2].map(() => new Fader(0)),
     };
@@ -181,7 +184,7 @@ export class ControlRoom {
     /** 目前被室內光照亮的煙色（線性；states/common.js 用它設定霧色與 postfx 煙霾色）。唯讀。 */
     this.smokeColor = new THREE.Color(0, 0, 0);
     /** 濃煙外觀的可調參數（除錯/調校用）：光照倍率、去飽和、煙團上/下側亮度、煙層顏色倍率與濃度倍率、餘燼光。 */
-    this.smokeLook = { albedo: SMOKE_ALBEDO, desat: SMOKE_DESAT, top: 1.25, low: 0.85, warm: 0.7, layerCol: 0.75, layerK: 1, haze: 0.55, ember: EMBER_MAX };
+    this.smokeLook = { albedo: SMOKE_ALBEDO, desat: SMOKE_DESAT, top: 1.25, low: 0.85, warm: 0.7, layerCol: 0.75, layerK: 1, haze: 0.55, ember: EMBER_MAX, front: 0.07, fire: 1 };
     /** 整片霧與 postfx 煙霾用的顏色（線性；smokeColor × smokeLook.haze）。唯讀。 */
     this.hazeColor = new THREE.Color(0, 0, 0);
     this._smokeTop = new THREE.Color();
@@ -275,6 +278,11 @@ export class ControlRoom {
     });
     this.fillLight = new THREE.PointLight(0xffffff, 0, 7, 2);
     this.fillLight.position.set(0, 1.75, 0.1);
+    this._fillHome = this.fillLight.position.clone();
+    // 終幕火光的位置：防爆門內側、門洞中段高度（門外是火場）
+    this._fireAt = new THREE.Vector3(L.minX + 0.6, 1.2, L.blastDoor.z + 0.25);
+    /** 終幕火光強度 0..1（唯讀；濃煙粒子在門外的亮度用它） */
+    this.fireLevel = 0;
     this.group.add(this.fillLight);
   }
   _placeLight(s, P) {
@@ -383,6 +391,7 @@ export class ControlRoom {
     M.diff.forEach((v, j) => this._f.diff[j].set(v, dur, now));
     this._f.emerg.set(M.emerg, dur, now);
     this._f.fill.set(M.fill, dur, now);
+    this._f.fire.set(M.fire || 0, dur, now);
     this._fillCol.set(M.fillCol, dur, now);
     this._f.power.set(M.power, Math.min(dur, 0.6), now);
     this._f.warm.set(M.warm, dur, now);
@@ -609,7 +618,8 @@ export class ControlRoom {
 
     this.U.uDirt.value = c;
     this.U.uBurnt.value = b;
-    this.U.uEmber.value = b > 0.001 ? 0.06 * (1 - b * b) : 0;
+    // 燃燒前緣：一條往房內推進的暗橘光帶（焦黑完成後消失）
+    this.U.uEmber.value = b > 0.001 ? this.smokeLook.front * (1 - b * b) : 0;
     // 龜裂餘燼光：焦黑完成後慢慢亮起、濃煙中略被吞沒；起伏由著色器處理（光敏感模式不起伏）
     this.U.uEmberGlow.value = this.smokeLook.ember * smoothstep(0.08, 0.55, b) * (1 - 0.45 * smoothstep(0.6, 1, s));
     this.U.uEmberWobble.value = reduce ? 0 : 0.12;
@@ -683,12 +693,21 @@ export class ControlRoom {
     this.fillLight.color.copy(fillCol);
     if (warm > 0.01) this.fillLight.color.lerp(AMBER, c * 0.6 * warm);
     const fillStart = (startK[0] + startK[1] + startK[2]) / 3;
-    this.fillLight.intensity = fill * FILL_CD * fillStart * corrDim * smokeDim * burnDim;
+    // 終幕火光：補光滑到防爆門內側、轉為橘紅，強度跟著焦黑（門口先燒起來）；緩慢起伏 ≤ 9%、週期 ≥ 1.9 秒
+    const fire = f.fire.update(now);
+    const fireK = fire * smoothstep(0.02, 0.4, b) * this.smokeLook.fire;
+    this.fireLevel = fireK;
+    this.fillLight.position.lerpVectors(this._fillHome, this._fireAt, fire);
+    if (fireK > 0.001) this.fillLight.color.lerp(FIRE_COL, Math.min(1, fireK));
+    const fwob = reduce ? 1 : 1 + 0.09 * (0.6 * Math.sin((t * Math.PI * 2) / 1.9) + 0.4 * Math.sin((t * Math.PI * 2) / 3.3 + 1.3));
+    this.fillLight.intensity = (fill * FILL_CD * fillStart * corrDim + FIRE_CD * fireK * fwob) * smokeDim * burnDim;
 
     // 防爆門外的短廊（不受光材質）：只在門口附近帶到一點點室內光
     if (this.stubMat) {
       const k = 0.3 * this._overallLevel + 0.12 * emerg;
       this.stubMat.color.copy(this.roomLights[0].color).multiplyScalar(k * (1 - 0.6 * s));
+      // 終幕：門外的短廊被火光映成暗橘紅
+      if (this.fireLevel > 0.001) this.stubMat.color.add(_tmpC.copy(FIRE_COL).multiplyScalar(0.55 * this.fireLevel));
     }
 
     // ---- 腐化貼花 ----
@@ -837,6 +856,7 @@ export class ControlRoom {
       litLow: this._smokeLow.copy(sc).lerp(light, look.warm).multiplyScalar(look.low),
       fogColor: fog?.color || sc,
       fogDensity: fog?.density || 0,
+      outK: 0.18 + 0.8 * this.fireLevel,
       camera: this.ctx.camera,
     });
   }

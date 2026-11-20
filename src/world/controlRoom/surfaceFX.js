@@ -67,6 +67,20 @@ uniform float uLayerK;
 uniform vec3 uLayerCol;
 varying vec3 vSfxPos;
 varying vec3 vSfxNrm;
+// 龜甲狀碳化裂紋（alligator char）：2D Voronoi，回傳 (F1, F2 - F1, 胞的亂數)
+vec3 sfxCell( vec2 p ) {
+  vec2 ip = floor( p ), fp = fract( p );
+  float f1 = 8.0, f2 = 8.0, id = 0.0;
+  for ( int j = -1; j <= 1; j++ ) for ( int i = -1; i <= 1; i++ ) {
+    vec2 g = vec2( float( i ), float( j ) );
+    vec2 o = fract( sin( vec2( dot( ip + g, vec2( 127.1, 311.7 ) ), dot( ip + g, vec2( 269.5, 183.3 ) ) ) ) * 43758.5453 );
+    vec2 r = g + 0.12 + 0.76 * o - fp;
+    float d = dot( r, r );
+    if ( d < f1 ) { f2 = f1; f1 = d; id = o.x; } else if ( d < f2 ) { f2 = d; }
+  }
+  f1 = sqrt( f1 ); f2 = sqrt( f2 );
+  return vec3( f1, f2 - f1, id );
+}
 `;
 const FRAG_COLOR = /* glsl */`
 float sfxBurn = 0.0;
@@ -93,17 +107,22 @@ float sfxCrack = 0.0;
     float thr = 0.30 * nLo + 0.14 * nHi + 0.16 * ( 1.0 - h ) + 0.45 * dN;
     sfxBurn = smoothstep( thr - 0.03, thr + 0.03, uBurnt * 1.12 );
     // 燃燒前緣：比剝落過渡帶更窄的一條暗橘線
-    float e0 = smoothstep( thr - 0.008, thr + 0.008, uBurnt * 1.12 );
-    sfxEdge = clamp( e0 * ( 1.0 - e0 ) * 4.0, 0.0, 1.0 ) * ( 0.6 + 0.8 * nHi );
-    // 透出餘燼光的地方：焦黑貼圖中的褐色龜裂＋低頻噪音等高線形成的較寬裂脈（只在「還熱」的區域）
-    vec3 vA = vec3( texture2D( uBurnNoise, vSfxPos.zy * 0.45 + 0.13 ).r, texture2D( uBurnNoise, vSfxPos.xz * 0.45 + 0.37 ).r, texture2D( uBurnNoise, vSfxPos.xy * 0.45 + 0.71 ).r );
-    float nV = dot( vA, bn );
-    float vein = 1.0 - smoothstep( 0.002, 0.011, abs( nV - 0.5 ) );
-    // 裂脈斷成一段一段（高頻噪音遮罩），只有「還熱」的區域會亮
-    float seg = smoothstep( 0.42, 0.62, texture2D( uBurnNoise, ( vSfxPos.xz + vSfxPos.zy ) * 1.7 + 0.5 ).r );
-    float hot = smoothstep( 0.6, 0.85, nLo ) * smoothstep( 0.35, 0.6, nHi ) * seg;
+    // 燃燒前緣：焦黑邊界外側一條柔和、斷續的暗紅悶燒帶（不是一條亮線）
+    float e0 = smoothstep( thr - 0.035, thr + 0.035, uBurnt * 1.12 );
+    sfxEdge = clamp( e0 * ( 1.0 - e0 ) * 4.0, 0.0, 1.0 ) * smoothstep( 0.35, 0.8, nHi );
+    // 碳化面龜裂成一塊塊微微隆起的炭塊（以法線的主軸平面計算 Voronoi；房間表面幾乎都是軸對齊的）
+    vec2 cp = bn.x > max( bn.y, bn.z ) ? vSfxPos.zy : ( bn.y > bn.z ? vSfxPos.xz : vSfxPos.xy );
+    vec3 cl = sfxCell( cp * 6.0 + vec2( nLo, nHi ) * 2.2 );
+    float aw = max( 0.025, 1.3 * fwidth( cl.y ) );
+    float crack = 1.0 - smoothstep( 0.008, 0.008 + aw, cl.y );
+    // 炭塊：中央較亮（受光的隆起）、邊緣變暗陷入裂縫，每塊明暗略有不同
+    float blister = mix( 1.25, 0.55, smoothstep( 0.05, 0.62, cl.x ) ) * ( 0.8 + 0.4 * cl.z );
+    // 還熱的區域（大片斑塊）裂縫透出餘燼光；焦黑貼圖本身的褐色裂紋也微微發光
+    // 只有少數「還熱」的斑塊（約 1/5 面積），且只有其中部分炭塊的邊緣在發光
+    float hot = smoothstep( 0.6, 0.82, nLo + 0.25 * ( nHi - 0.5 ) ) * smoothstep( 0.35, 0.7, cl.z );
     float crk = smoothstep( 0.025, 0.07, charC.r - charC.b * 1.6 );
-    sfxCrack = clamp( max( crk * 0.6, vein * hot ), 0.0, 1.0 ) * sfxBurn;
+    sfxCrack = clamp( max( crk * 0.25, crack * hot ), 0.0, 1.0 ) * sfxBurn;
+    charC *= mix( 1.0, blister, 0.8 ) * ( 1.0 - 0.5 * crack );
     diffuseColor.rgb = mix( diffuseColor.rgb, max( charC * vec3( 1.6, 1.5, 1.4 ), vec3( 0.06, 0.054, 0.048 ) ), sfxBurn );
   }
 }
@@ -115,7 +134,7 @@ const FRAG_METAL = /* glsl */`
 metalnessFactor = mix( metalnessFactor, 0.0, sfxBurn );
 `;
 const FRAG_EMISSIVE = /* glsl */`
-totalEmissiveRadiance = totalEmissiveRadiance * ( 1.0 - sfxBurn ) + vec3( 0.55, 0.13, 0.02 ) * sfxEdge * uEmber;
+totalEmissiveRadiance = totalEmissiveRadiance * ( 1.0 - sfxBurn ) + vec3( 1.0, 0.2, 0.03 ) * sfxEdge * uEmber;
 if ( uEmberGlow > 0.0001 && sfxCrack > 0.001 ) {
   // 緩慢、低振幅的起伏（週期 1.9–3.4 秒，依位置錯開；光敏感模式下 uEmberWobble = 0）
   float ph = texture2D( uBurnNoise, vSfxPos.xz * 0.37 + vSfxPos.yy * 0.21 ).r * 6.2831853;
