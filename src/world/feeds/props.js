@@ -264,12 +264,16 @@ export function buildSedan({ paint = 0xe9e9e4, doorOpen = 0, crushed = 0, burnt 
     mesh(mergeList([doorPanel, ...frame]), body, hinge);
     mesh(boxG(1.1, 0.38, 0.012, -0.62, 1.1, 0.02), glass, hinge);
     mesh(boxG(1.15, 0.5, 0.01, -0.62, 0.61, 0.033), std({ color: 0x2b2826, roughness: 0.9 }), hinge); // 門內飾板
+    let dome = null, domeLampMat = null;
     if (interiorLight > 0) {
-      const dome = new THREE.PointLight(0xffe2b0, interiorLight, 0, 2);
+      dome = new THREE.PointLight(0xffe2b0, interiorLight, 0, 2);
       dome.position.set(-0.1, 1.28, 0);
       inner.add(dome);
-      mesh(boxG(0.16, 0.02, 0.1, -0.1, 1.36, 0), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.5, 1.3, 1.0) }), inner);
+      domeLampMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.5, 1.3, 1.0) });
+      mesh(boxG(0.16, 0.02, 0.1, -0.1, 1.36, 0), domeLampMat, inner);
     }
+    // 監視器微事件（anomalies.js）用：車門鉸鏈、車頂燈（只改 rotation / intensity / color，不增減燈光）
+    car.userData.parts = { hinge, dome, domeLampMat };
   }
   return car;
 }
@@ -426,6 +430,23 @@ export function glow(color, scale, pos, { opacity = 1, fog = true } = {}) {
   s.scale.set(scale[0], scale[1] ?? scale[0], 1);
   s.position.set(pos[0], pos[1], pos[2]);
   return s;
+}
+
+/**
+ * 剪影：把 group 內所有 mesh 換成同一個不受光的深色材質（受霧影響），用來在 LD 熱源亮斑裡「切出」形狀。
+ * 同一顏色共用一個材質；原本的材質直接丟棄（從未渲染過，不佔 GPU 資源）。
+ */
+const _silMats = new Map();
+export function silhouetteOf(group, color = 0x060606) {
+  let mat = _silMats.get(color);
+  if (!mat) { mat = new THREE.MeshBasicMaterial({ color, fog: true }); _silMats.set(color, mat); }
+  const shared = new Set(_silMats.values());
+  group.traverse((o) => {
+    if (!o.isMesh) return;
+    for (const m of [].concat(o.material)) if (m && !shared.has(m)) m.dispose();
+    o.material = mat;
+  });
+  return group;
 }
 
 /** 帶貼圖的平面（標誌、貼花）；decal = true 時透明、不寫深度 */

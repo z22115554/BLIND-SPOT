@@ -5,7 +5,8 @@
 // 兩種外觀：
 //   LD：帶兜帽的反光雨衣（兜帽裡是一片黑），長外套、反光條在紅外線補光下發亮；沒有頭盔/面罩/斧頭。
 //   HD：隧道特種消防救援隊員：反光條制服、頭盔、融化變形的面罩（滴垂的焦黑塑膠）、空氣呼吸器、破門斧。
-// 靜態姿勢 setPose(index)：沒有任何待機動作（盲區規則：被看著的時候不得有任何變化）。
+// 靜態姿勢 setPose(index, sub)：沒有任何待機動作（盲區規則：被看著的時候不得有任何變化）。
+//   sub = true：同一位置的次姿勢（LD_SUBPOSES，index ≤ LD_SUBPOSE_MAX），只在盲區中由 CameraFeeds 套用。
 // HD 動作（setAction(true)）：在防爆門前筋疲力竭地劈門：緩慢舉斧（約 1.2 秒）→ 揮下 → 擊中（onAxeHit）
 //   → 反彈 → 喘息停頓；週期約 2.2–3 秒。雙手握柄以兩段式 IK 求解。
 // =============================================================================
@@ -60,6 +61,19 @@ const LD_POSES = {
   door: P({ spine: [0.14, 0, 0], chest: [0.1, 0, 0], neck: [0.34, 0, 0], head: [0.3, 0, 0.1],
     lShoulder: [-0.02, 0, 0.12], rShoulder: [-1.52, 0, -0.1], rElbow: [-0.06, 0, 0], rWrist: [-1.25, 0, 0],
     lHip: [-0.06, 0, 0.03], lKnee: [0.1, 0, 0] }),
+};
+
+// LD 次姿勢（sub-pose）：人影推進到目前上限、玩家又移開視線時的「小變化」（同一位置、同一朝向）。
+// 只覆寫少數關節，疊在該 index 的基本姿勢上；不會增加任何朝向鏡頭的 yaw / pitch（不會更「看著你」）。
+// 每個 index 最多一次；6、7（舉手、門前）沒有次姿勢。由 CameraFeeds 的盲區規則決定何時套用。
+export const LD_SUBPOSE_MAX = 5;
+export const LD_SUBPOSES = {
+  0: { neck: [0.30, 0, 0], head: [0.28, 0, 0.07] },                                     // 額頭抵著牆
+  1: { rShoulder: [-1.05, 0, -0.12], rElbow: [-0.55, 0, 0] },                            // 一隻手掌抬起
+  2: { neck: [0.45, 0.12, 0], head: [0.42, 0.12, 0.05] },                               // 低頭看地面（yaw ≤ 基本姿勢）
+  3: { chest: [0.18, 0, 0], lShoulder: [0.12, 0, 0.06], rShoulder: [0.12, 0, -0.06] },  // 肩膀垮下、雙手垂著
+  4: { lShoulder: [-0.5, 0, 0.3], lElbow: [-1.6, 0, 0] },                                // 一隻手按在胸口
+  5: { rShoulder: [-0.25, 0, -0.14], rElbow: [-0.2, 0, 0] },                             // 伸出的手垂下（累了）
 };
 
 // HD 劈門動作的關鍵影格（root 局部座標：面向 +Z = 防爆門）
@@ -238,6 +252,7 @@ export class Figure {
     this.j = {};
     this.look = 'LD';
     this.index = 0;
+    this.sub = false;
     this.action = false;
     this.onAxeHit = null;
     this._actT = 0;
@@ -447,13 +462,17 @@ export class Figure {
       this.root.rotation.set(0, 0, 0);
       this._applyHD(0, true);
     } else {
-      this.setPose(this.index);
+      this.setPose(this.index, this.sub);
     }
   }
 
-  /** LD 靜態姿勢（0..7）。沒有任何待機動作。 */
-  setPose(index) {
+  /**
+   * LD 靜態姿勢（0..7）。沒有任何待機動作。
+   * sub = true：疊上該 index 的次姿勢（LD_SUBPOSES；index > LD_SUBPOSE_MAX 時忽略）。
+   */
+  setPose(index, sub = false) {
     this.index = clamp(Math.round(index), 0, FIGURE_WAYPOINTS.length - 1);
+    this.sub = !!sub && this.index <= LD_SUBPOSE_MAX && !!LD_SUBPOSES[this.index];
     if (this.look !== 'LD') return;
     const w = FIGURE_WAYPOINTS[this.index];
     let yaw;
@@ -463,7 +482,8 @@ export class Figure {
     yaw += w.yawOff || 0;
     this.root.position.set(w.x, 0, w.z);
     this.root.rotation.set(0, yaw, 0);
-    this._applyPose(LD_POSES[w.pose] || LD_POSES.wall);
+    const base = LD_POSES[w.pose] || LD_POSES.wall;
+    this._applyPose(this.sub ? { joints: { ...base.joints, ...LD_SUBPOSES[this.index] }, body: base.body } : base);
     this.root.updateMatrixWorld(true);
     // 紅外線補光下的反光條亮度（逆向反射：光源就在鏡頭旁，越近越亮）
     const d = Math.hypot(w.x - this.faceTarget.x, 1.2 - this.faceTarget.y, w.z - this.faceTarget.z);
