@@ -1,44 +1,46 @@
-# 中段節奏重做：進度與接續方式（存檔點）
+# 中段節奏重做：進度
 
-最後更新：2026-11-20 12:27 UTC（因五小時用量上限暫停前的存檔）
+最後更新：2026-11-20（整合完成：pacing-int）
 
-## 已完成並已在本分支（ccr-98a0543d-oehy6f）
+## 已完成
 
-- 審查修正全部合併：廊道/監視畫面、主控室/終幕、系統層。內容見 `docs/review/fixpass-notes.md`。
-- 這版已打包成 `dist/blind-spot.html`，煙霧測試 6/6 通過，Artifact 也是這一版。
-- 中段節奏設計定稿：`docs/pacing/spec.md`。三份提案在 `docs/pacing/proposal-*.md`。
-- 三個工作包的進度以 checkpoint 合併進本分支的 `src/`。三包合起來可以打包，但**尚未整合驗證**，`dist/`、`index.html` 仍是上面那個穩定版。
+- 審查修正全部合併：廊道/監視畫面、主控室/終幕、系統層。內容見 `docs/review/fixpass-notes.md`；刻意偏離原規格的地方整理在
+  `docs/DESIGN-NOTES.md` F 節。
+- 中段節奏設計定稿：`docs/pacing/spec.md`（三份提案在 `docs/pacing/proposal-*.md`）。
+- 三個工作包都已合併並整合驗證（`pacing-int` 分支）：
 
-| 工作包 | 分支 | 狀態 |
+| 工作包 | 內容 | 狀態 |
 |---|---|---|
-| WP-A 畫面內容 | `wp-a` | `anomalies.js` 四台攝影機的各階段異常、`setStage` API、LD 細微姿勢、可讀性調整、`feed-stages.mjs` 截圖工具 |
-| WP-B 提示系統 | `wp-b` | CameraFeeds 動態偵測 API（alert/ack/stage guard/凍結時間/OSD 標記）；CAM 按鈕琥珀燈；`setBlastLocked`；`vmdTone`/`doorKnock`（座位峰值約 -30 dBFS）；`pacing-run.mjs` 自動計時工具（WIP） |
-| WP-C 導演/時鐘 | `wp-c` | `script.js` 補充文案與 02:05 修正；`monitoringDirector.js`（PACE/SCHEDULE，零 import）；`MonitoringState` 接線；02:00 鎖門閘門；敲門/日誌；`common.js`；`pacing-sim.mjs` 節點模擬 |
+| WP-A 畫面內容 | `anomalies.js` 四台攝影機的各階段異常、`setStage` API、LD 次姿勢、CAM-03 拖痕、`feed-stages.mjs` | ✅ 整合時補完：實測 `MEAN_SCALE`、拖痕改為反射盡頭燈、CAM-02 第 1 階段加強 |
+| WP-B 提示系統 | CameraFeeds 動態偵測 API、CAM 按鈕琥珀燈、`setBlastLocked`、`vmdTone` / `doorKnock`、`pacing-run.mjs` | ✅ |
+| WP-C 導演/時鐘 | `script.js` 補充文案與 02:05 修正、`monitoringDirector.js`、`MonitoringState` 接線、上鎖閘門、敲門、`pacing-sim.mjs` | ✅ |
 
-## 尚未完成
+- 整合時的其他修正：
+  - 02:14 跳電轉紅色緊急照明 1.5 → 2.0 秒（整個畫面每 0.25 秒最多掉 22.4%，原本 29–32%）；直接進入 BLACKOUT 的淡入 1.2 → 2.4 秒。
+  - 上鎖閘門的提示在玩家已經轉手輪時不再跳出。
+  - `pacing-run.mjs` 與 `?pacelog=1` 摘要把「完成上鎖 / 拉下拉桿」算成事件（之前玩家一直在做事的閘門時間被算成空檔）。
+- 文件：`docs/ARCHITECTURE.md`（ctx、事件、MONITORING 節拍與 API、測試工具）、`docs/DESIGN-NOTES.md`（E：試玩回饋 → 節奏改版；
+  F：審查修正的刻意偏離；B3 改為 02:05）、`README.md`（除錯參數表、GitHub Pages）。
 
-1. 各工作包代理在暫停時可能還沒做完。接續時先看各分支 `git log c0f21d5..wp-x`，以及代理最後的進度。
-2. **整合**：在 `pacing-int` worktree 合併 wp-a/b/c，接好介面，然後跑這些：
-   - `node scripts/pacing-sim.mjs`
-   - `scripts/pacing-run.mjs`（`?speed=N` 量這一幕的長度和最長空檔，目標見 spec §2/§9）
-   - 每個異常的截圖、舒適度量測、煙霧測試
-3. 修正審查時留下的殘餘項目：
-   - 02:14 跳電時主控室燈光每 0.25 s 降約 32%（`ControlRoom.setLighting('emergency')`）
-   - 直接進入 BLACKOUT_CORRIDOR 的淡入
-   - 終幕在 reduceFlicker 模式下還沒跑過
-4. 審查：一位審查員實際試玩監看這一幕，一位審查程式與迴歸問題；之後修正。
-5. 文件：依 `docs/review/fixpass-notes.md` 和各工作包的 docNotes，更新 ARCHITECTURE / DESIGN-NOTES / README。
-6. 完整打包：`node scripts/build.mjs` 會同時產生 `dist/blind-spot.html` 和根目錄 `index.html`。之後提交、推送，並更新 Artifact。
+## 量測結果（整合版）
 
-## 接續指令（同一個 session）
+| 項目 | 結果 | 目標 |
+|---|---|---|
+| node 模擬（200 次/種） | 一般 4:27（p10–p90 4:22–4:33）、積極 4:00、只盯 CAM-03 5:01、被動 5:23；全部斷言通過 | spec §9.1 |
+| 瀏覽器自動駕駛 一般玩家（`?speed=4`、seed 3） | 這一幕 281.6 s（另一次 291.2 s）、最長空檔 18.4 s（02:10 通風衰弱）、8 個提示、人影 7、盲區違規 0、錯誤 0 | 235–300 s、≤ 22 s |
+| 瀏覽器自動駕駛 積極玩家（seed 5） | 253.2 s、最長空檔 18.8 s（第一通來電中）、8 個提示、人影 7、違規 0、錯誤 0 | ≥ 225 s、≤ 22 s |
+| 微事件亮度 `MEAN_SCALE`（實測） | CAM-01 [1, 1.02, 0.40]、CAM-02 [1, 1, 0.93, 0.92, 0.83]、CAM-03 [1, 0.92]、CAM-04 [1, 0.97, 0.82] | 實測取代估計 |
+| 02:14 跳電（整個畫面） | 每 0.25 秒最多 22.4%（相對局部參考 16.8%），單調變暗 | ≤ 30% |
+| 終幕（光敏感模式） | 沒有任何閃爍；最大變化是劇本運鏡轉向黑暗的門（局部參考 26.7%）與最後淡出到近乎全黑 | ≤ 30%、無閃爍 |
 
-- 實作 workflow 的指令稿：`~/.claude/projects/-home-user-BLIND-SPOT/<session>/workflows/scripts/blindspot-pacing-implement-wf_fcfc4198-acb.js`。
-  - WP-C 與 WP-A：run `wf_fcfc4198-acb`，args `["wp-c","wp-a"]`。
-  - WP-B：run `wf_c8103348-172`，args `["wp-b"]`。
-  - 用 `resumeFromRunId` 重跑時，已完成的 agent 會從快取回傳；被中斷的 agent 會重新開始。prompt 說明它要從 worktree 現有的提交接著做。
-- prompt 檔在 scratchpad 的 `impl/prompt-wp-*.md`。如果 scratchpad 不見了，可以照 spec §11 重寫。
-- 背景自動存檔腳本在 scratchpad 的 `autosave.sh`：每 10 分鐘把 wp-a/b/c/pacing-int 的新提交合併到本分支並推送。
+其餘舒適度與路徑檢查的數字見整合回報（`/tmp/impl-int/` 下的輸出；機器重開會清掉）。
+
+## 尚未完成 / 留給 owner
+
+1. 請 owner 試玩兩次：預設，以及 `?pace=0`（改版前）。問題清單見 spec §9.5；需要決定的五件事見 DESIGN-NOTES E6。
+2. 終幕在光敏感模式下只量到開門後約 30 秒（機器負載高，回到桌面那一段沒有跑完）。
 
 ## GitHub Pages
 
-打包時會在根目錄產生 `index.html`，另有 `.nojekyll`。到 Settings → Pages 選 Deploy from a branch，分支 `ccr-98a0543d-oehy6f`，資料夾 `/ (root)`。私有倉庫在免費方案下需要先公開。
+`node scripts/build.mjs`（不帶 `--out`）會同時寫出 `dist/blind-spot.html` 與根目錄 `index.html`，另有 `.nojekyll`。
+到 Settings → Pages 選 Deploy from a branch，分支選要發佈的分支，資料夾 `/ (root)`。私有倉庫在免費方案下需要先公開。
