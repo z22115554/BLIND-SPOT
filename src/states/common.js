@@ -78,13 +78,27 @@ export function slumpedPose(ctx, base = ctx.LAYOUT.SPAWN.seated) {
  * 終幕寫字的相機姿勢：坐在 SPAWN.writing，上身前傾、低頭俯視桌上的便利貼，
  * 讓便利貼與筆佔畫面相當比例、「鎖死防爆門。」清晰可讀。（可調：WRITE_CAM）
  */
-export const WRITE_CAM = { back: 0.04, up: 0.2, side: 0.012, lookAhead: -0.055, lookSide: 0.004 };
+// 便利貼在畫面正中央、夠大（800×450 也讀得到「鎖死防爆門。」）；右上角只帶到 CAM 按鈕座的邊角（大字在畫面外）。
+export const WRITE_CAM = { back: 0.055, up: 0.172, side: 0.02, lookAhead: -0.004, lookSide: 0.008, roll: 0.03 };
 export function writingPose(ctx) {
   const W = ctx.LAYOUT.SPAWN.writing;
   const n = points(ctx).note;
   const look = { x: n.x + WRITE_CAM.lookSide, y: n.y, z: n.z + WRITE_CAM.lookAhead };
   const cam = { x: n.x + WRITE_CAM.side, y: n.y + WRITE_CAM.up, z: n.z + WRITE_CAM.back };
-  return rigPose(ctx, W, cam, look, 0.035);
+  return rigPose(ctx, W, cam, look, WRITE_CAM.roll);
+}
+
+/**
+ * 終幕「回到桌面」的第一個鏡頭：坐在 SPAWN.writing，微微前傾、望向桌上的咖啡杯
+ * （焦黑由這個畫面退去、熱咖啡冒出蒸氣；右下角是便利貼與筆）。之後再前傾低頭到 writingPose。（可調：MUG_CAM）
+ */
+export const MUG_CAM = { cam: { dx: 0.08, y: 1.13, dz: -0.26 }, lookUp: 0.07, roll: -0.02 };
+export function mugPose(ctx) {
+  const W = ctx.LAYOUT.SPAWN.writing;
+  const c = ctx.LAYOUT.CONTROL_ROOM.coffee;
+  const cam = { x: W.x + MUG_CAM.cam.dx, y: MUG_CAM.cam.y, z: W.z + MUG_CAM.cam.dz };
+  const look = { x: c.x, y: c.y + MUG_CAM.lookUp, z: c.z };
+  return rigPose(ctx, W, cam, look, MUG_CAM.roll);
 }
 
 /** 把玩家放進某個姿勢（坐姿、停用輸入）。 */
@@ -174,10 +188,14 @@ const FOG = {
   roomRestored: { density: 0.04, color: new THREE.Color('#0b0806') },
   corridor: { density: 0.12, color: new THREE.Color('#06070a') },
   switchRoom: { density: 0.07, color: new THREE.Color('#06070a') },
-  smoke: { density: 0.9, color: new THREE.Color('#0a0806') },
+  // 終幕濃煙：大部分時間維持中等濃度（2–4 m 內的焦黑房間仍看得見），只有最後（smokeLevel → 1）才變得很濃。
+  // 霧色 = 被室內光照亮的煙霾色（controlRoom.hazeColor），隨終幕燈光變化。
+  smoke: { density: 0.15, colorK: 0.5, color: new THREE.Color('#0a0806') },
+  smokeThick: { density: 0.5 },
 };
 const _fogCol = new THREE.Color();
 const _fogTmp = new THREE.Color();
+const _smokeCol = new THREE.Color();
 
 function fogTarget(ctx, out) {
   const cam = ctx.camera.position;
@@ -191,15 +209,24 @@ function fogTarget(ctx, out) {
   out.copy(room.color).lerp(FOG.corridor.color, wCorr);
   d = lerp(d, FOG.switchRoom.density, wSw);
   out.lerp(FOG.switchRoom.color, wSw);
-  // 濃煙（終幕）：霧轉黑轉濃
-  // 先讓煙霧粒子翻滾進來（霧只略增），後段才把整個房間吞成一片黑褐
+  // 濃煙（終幕）：煙團先沿天花板翻滾進來（煙層由 ControlRoom 處理），霧只隨著煙量慢慢增加到中等濃度，
+  // 最後一段（smokeLevel 0.8 → 1）才變得很濃。霧色跟著被照亮的煙色走。
   const s = clamp(ctx.controlRoom?.smokeLevel ?? 0);
   if (s > 0) {
-    const k = Math.pow(smoothstep(0.2, 1, s), 1.7);
+    const k = smoothstep(0.04, 0.62, s);
     d = lerp(d, FOG.smoke.density, k);
-    out.lerp(FOG.smoke.color, k);
+    d = lerp(d, FOG.smokeThick.density, smoothstep(0.8, 1, s));
+    out.lerp(smokeFogColor(ctx, _smokeCol), k);
   }
   return d;
+}
+
+/** 濃煙的霧色：被室內光照亮的煙霾色（ControlRoom.hazeColor；舊版退回 smokeColor × colorK），都沒有時用預設的深褐。 */
+function smokeFogColor(ctx, out) {
+  const cr = ctx.controlRoom;
+  if (cr?.hazeColor?.isColor) return out.copy(cr.hazeColor);
+  if (cr?.smokeColor?.isColor) return out.copy(cr.smokeColor).multiplyScalar(FOG.smoke.colorK);
+  return out.copy(FOG.smoke.color);
 }
 
 function ensureFog(ctx) {
@@ -212,9 +239,13 @@ export function updateAtmosphere(ctx, dt) {
   const fog = ensureFog(ctx);
   const d = fogTarget(ctx, _fogCol);
   // 濃煙時跟得比較快（煙本身已經是 7 秒的緩慢變化），其餘時間慢慢過渡
-  const lambda = (ctx.controlRoom?.smokeLevel ?? 0) > 0.01 ? 4 : 2.2;
+  const smoke = ctx.controlRoom?.smokeLevel ?? 0;
+  const lambda = smoke > 0.01 ? 4 : 2.2;
   fog.density = damp(fog.density, d, lambda, dt);
   fog.color.lerp(_fogCol, 1 - Math.exp(-lambda * dt));
+  // postfx 的煙霾也用被照亮的煙色（只在有煙時更新；平常保持 PostFX 的預設）
+  const pf = ctx.postfx;
+  if (smoke > 0.001 && pf?.smokeColor?.isColor) pf.smokeColor.copy(smokeFogColor(ctx, _smokeCol));
 }
 /** 直接設定（跳關/重置時，畫面全黑中使用）。 */
 export function snapAtmosphere(ctx) {
@@ -644,14 +675,17 @@ export function registerCommonInteractables(ctx) {
   const S = ctx.SCRIPT, V = S.verbs, I = S.interact, D = S.descriptions, f = () => ctx.flags;
   const cr = ctx.controlRoom?.objects || {}, co = ctx.corridor?.objects || {};
   const playing = () => !inState(ctx, STATES.TITLE) && !f().endingStarted;
+  // 終幕：防爆門緊急解鎖亮起後，它是唯一可互動的目標（沒有其他提示、不能切 CAM、不能檢視）
+  const allowed = (id) => !f().unlockArmed || id === 'unlock';
   const add = (o) => {
     if (!o.object) { console.warn('[states] interactable without object:', o.id); return; }
     const enabled = o.enabled || (() => true);
+    const ok = () => playing() && allowed(o.id) && !!enabled();
     const wrapped = {
       ...o,
-      enabled: () => playing() && !!enabled(),
+      enabled: ok,
       // Interaction.trigger() 不檢查 enabled：onUse 自己再確認一次
-      onUse: () => { if (playing() && enabled()) o.onUse(); },
+      onUse: () => { if (ok()) o.onUse(); },
     };
     it.add(wrapped);
   };

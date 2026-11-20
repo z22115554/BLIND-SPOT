@@ -100,14 +100,18 @@ export function paintedMetal() {
 // -----------------------------------------------------------------------------
 // 版面（像素，canvas y 向下）：供 ControlRoom 對齊把手/門縫等幾何
 export const STEEL_DOOR_LAYOUT = { w: 512, h: 704, frame: 34, ribs: [180, 350, 520], ribHalf: 11, band: [592, 640] };
-export function steelDoor() {
-  const W = 512, H = 704, N = W * H;
-  const F = 34;                    // 周框寬
-  const ribs = [180, 350, 520];    // 加強肋中心 y
-  const RH = 11;                   // 加強肋半高
-  const band = [592, 640];         // 警示帶
-  const mott = field(W, H, { cells: 3, octaves: 5, seed: 121 }, 4);
-  const peel = field(W, H, { cells: 100, cellsY: 138, octaves: 2, seed: 122 }, 2);
+// 側門變體（side: true）：384×800，對應東牆側門 1.0 m × 2.1 m 的門扇（UV 0..1 只貼一次）；
+// 沒有防爆門的噴漆字與警示帶，只有周框、兩道加強肋、刮痕與下緣污垢。
+export const SIDE_DOOR_LAYOUT = { w: 384, h: 800, frame: 26, ribs: [345, 560], ribHalf: 9 };
+export function steelDoor({ side = false } = {}) {
+  const W = side ? 384 : 512, H = side ? 800 : 704, N = W * H;
+  const sy = H / 704;              // 垂直位置的換算（以防爆門版面為基準）
+  const F = side ? 26 : 34;        // 周框寬
+  const ribs = side ? [345, 560] : [180, 350, 520];    // 加強肋中心 y
+  const RH = side ? 9 : 11;        // 加強肋半高
+  const band = side ? [-1, -1] : [592, 640];           // 警示帶（側門沒有）
+  const mott = field(W, H, { cells: 3, octaves: 5, seed: side ? 131 : 121 }, 4);
+  const peel = field(W, H, { cells: Math.round(W / 5.12), cellsY: Math.round(H / 5.1), octaves: 2, seed: 122 }, 2);
   const wearN = field(W, H, { cells: 14, octaves: 5, seed: 123 }, 2);
   const grime = field(W, H, { cells: 4, octaves: 5, seed: 124 }, 4);
   const gr = grain(W, H, 125);
@@ -171,14 +175,15 @@ export function steelDoor() {
   for (let y = F / 2 + (H - F) / 19; y < H - F; y += (H - F) / 19) { rv(F / 2, y); rv(W - F / 2, y); }
   for (const ry of ribs) for (let x = F + 22; x < W - F - 10; x += 32) rv(x, ry);
   // 刮痕（中段較多，大致水平，推車/工具留下）
-  scratches(g, rnd, 90, { x0: F, y0: 230, x1: W - F, y1: 560, len: [10, 110], angle: 0, spread: 0.5, light: [140, 144, 136], alpha: [0.12, 0.42], hg });
+  scratches(g, rnd, Math.round(90 * W / 512), { x0: F, y0: 230 * sy, x1: W - F, y1: 560 * sy, len: [10, 110], angle: 0, spread: 0.5, light: [140, 144, 136], alpha: [0.12, 0.42], hg });
   scratches(g, rnd, 30, { x0: F, y0: F, x1: W - F, y1: H - F, len: [6, 40], light: [140, 144, 136], alpha: [0.1, 0.3] });
   for (let i = 0; i < 5; i++) { // 深刮痕帶鏽
-    const x = F + 20 + rnd() * (W - 2 * F - 140), y = 380 + rnd() * 180, L = 40 + rnd() * 90;
+    const x = F + 20 + rnd() * (W - 2 * F - 140), y = (380 + rnd() * 180) * sy, L = 40 + rnd() * 90;
     g.strokeStyle = 'rgba(25,22,20,0.6)'; g.lineWidth = 2.2; g.beginPath(); g.moveTo(x, y); g.lineTo(x + L, y + (rnd() - 0.5) * 10); g.stroke();
     g.strokeStyle = 'rgba(120,64,30,0.45)'; g.lineWidth = 1.2; g.beginPath(); g.moveTo(x, y + 1); g.lineTo(x + L, y + 1); g.stroke();
     drip(g, x + L * 0.5, y + 2, 15 + rnd() * 40, 2.5, [105, 55, 28], 0.25, rnd, 1);
   }
+  if (side) return { map: canvas, bump, layout: { aspect: W / H, frameU: F / W, frameV: F / H, ribsV: ribs.map((y) => 1 - y / H) } };
   // 噴漆模板字
   const white = stencilLayer(W, H, (mg) => {
     mg.textAlign = 'center'; mg.textBaseline = 'middle';

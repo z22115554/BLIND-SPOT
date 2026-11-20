@@ -49,7 +49,8 @@ export function createMaterials(ctx, U) {
     greyPlastic: () => std({ color: 0x5c6063, roughness: 0.5, metalness: 0.05 }),
     chrome: () => std({ color: 0xc9cdd0, roughness: 0.28, metalness: 0.92 }),
     steelDoor: () => tm('steelDoor', { color: 0x9aa49d, roughness: 0.5, metalness: 0.3 }),
-    sideDoor: () => tm('steelDoor', { color: 0x8c98a4, roughness: 0.5, metalness: 0.3 }),
+    // 側門有自己的門扇貼圖（沒有防爆門的「防爆門 / BLAST DOOR / B區」噴漆），UV 由 buildSideDoor 依門扇尺寸指定
+    sideDoor: () => tm('steelDoorSide', { color: 0x8c98a4, roughness: 0.5, metalness: 0.3 }),
     frameSteel: () => tm('metalPanel', { color: 0x8a928e, roughness: 0.45, metalness: 0.35 }),
     hazard: () => tm('hazard', { roughness: 0.6, metalness: 0.1 }),
     paintedRed: () => tm('paintedMetal', { color: 0xb3281f, roughness: 0.5, metalness: 0.2 }),

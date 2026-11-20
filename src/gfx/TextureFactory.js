@@ -12,7 +12,7 @@
 //   concrete/concreteDark 512²≈1.2 m（模板接縫每 0.6 m、繫桿孔）；floorTiles 512²=2×2 片 60 cm 地磚（1.2 m）；
 //   ceilingTiles 512²=2×2 片 60 cm 礦纖板＋T-bar（1.2 m）；corridorWall 512×1024：V 0=地面…1=2.5 m、U 一格≈1.25 m
 //   （下 1.15 m 灰綠油漆＋1.07–1.15 m 深色腰帶）；corridorFloor 512²≈1.2 m（上緣為伸縮縫）；
-//   steelDoor 512×704：整片門扇貼一次（1.7×2.3 m），警示帶在 v≈0.09–0.16；tunnelTiles 256²：16×16 片，V 0=路面…1=牆頂；
+//   steelDoor 512×704：整片門扇貼一次（1.7×2.3 m），警示帶在 v≈0.09–0.16；steelDoorSide 384×800：側門門扇（1.0×2.1 m，無噴漆字/警示帶）；tunnelTiles 256²：16×16 片，V 0=路面…1=牆頂；
 //   roadLines 256²：U 橫跨兩車道（邊線＋中央白實線）、V 沿路平鋪；policeTape 1024×64：U 沿膠帶平鋪；
 //   pipe 256×512：U 繞圓周、V 沿管長；waterStain/soot/scorch：四邊淡出為 0，soot 的下緣為煙源（門框/風口上緣）。
 //   版面資訊另附在 texture.userData.layout（steelDoor、corridorWall、roadLines、各面板）。
@@ -29,7 +29,7 @@ import { watchFace, watchBack, logbookCover, logbookPage, coatBack, coffeeSurfac
 /**
  * 共用貼圖名稱（get(name)）：
  *  牆/地/天花：'concrete' 'concreteDark' 'floorTiles' 'ceilingTiles' 'corridorWall' 'corridorFloor'
- *  金屬/設備：'metalPanel' 'paintedMetal' 'steelDoor' 'hazard' 'rust' 'grate' 'crtBezel' 'plasticBeige' 'pipe' 'rubberMat' 'fabricSeat'
+ *  金屬/設備：'metalPanel' 'paintedMetal' 'steelDoor' 'steelDoorSide' 'hazard' 'rust' 'grate' 'crtBezel' 'plasticBeige' 'pipe' 'rubberMat' 'fabricSeat'
  *  隧道/道路：'tunnelTiles' 'asphalt' 'roadLines' 'policeTape'
  *  腐化疊層（RGBA，透明底，用於 decal）：'waterStain' 'soot' 'scorch'
  *  全焦黑：'charred'
@@ -48,6 +48,7 @@ const GENERATORS = {
   metalPanel: () => MATS.metalPanel(),
   paintedMetal: () => MATS.paintedMetal(),
   steelDoor: () => MATS.steelDoor(),
+  steelDoorSide: () => MATS.steelDoor({ side: true }),
   hazard: () => MATS.hazard(),
   rust: () => MATS.rust(),
   grate: () => MATS.grate(),
@@ -84,6 +85,7 @@ const SPEC = {
   metalPanel: { mat: { roughness: 0.55, metalness: 0.15, bumpScale: 0.9 }, aniso: 8 },
   paintedMetal: { mat: { roughness: 0.6, metalness: 0.12, bumpScale: 0.7 } },
   steelDoor: { mat: { roughness: 0.62, metalness: 0.2, bumpScale: 1.8 }, wrap: false, aniso: 8 },
+  steelDoorSide: { mat: { roughness: 0.6, metalness: 0.22, bumpScale: 1.6 }, wrap: false, aniso: 8 },
   hazard: { mat: { roughness: 0.68, metalness: 0.08, bumpScale: 0.7 } },
   rust: { mat: { roughness: 0.95, metalness: 0.15, bumpScale: 2.0 } },
   grate: { mat: { roughness: 0.7, metalness: 0.4, bumpScale: 1.0, alphaTest: 0.5, side: THREE.DoubleSide }, aniso: 8 },

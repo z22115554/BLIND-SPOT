@@ -44,13 +44,25 @@ const MODES = {
   normal: { pos: 'F', I: [1, 1, 1], col: '#dbeee4', tube: [1, 1, 1, 1, 1, 1], diff: [1, 1, 1], emerg: 0, fill: 1, fillCol: '#a7beb6', power: 1, warm: 1 },
   emergency: { pos: 'E', I: [1, 1, 1], col: '#ff1c0a', tube: [0, 0, 0, 0, 0, 0], diff: [0, 0, 0], emerg: 1, fill: 0.3, fillCol: '#ff2410', power: 0, warm: 0 },
   restored: { pos: 'F', I: [0.56, 0.55, 0.3], col: '#ffd9a6', tube: [0.56, 0.56, 0.55, 0.55, 0.52, 0], diff: [0.56, 0.55, 0.3], emerg: 0, fill: 0.55, fillCol: '#d9b68e', power: 1, warm: 1 },
-  ending: { pos: 'F', I: [0.5, 0.42, 0.3], col: '#ff7a2e', tube: [0.16, 0.14, 0.12, 0.1, 0.08, 0], diff: [0.16, 0.12, 0.08], emerg: 0.7, fill: 0.55, fillCol: '#ff6a26', power: 1, warm: 0 },
+  ending: { pos: 'F', I: [0.62, 0.54, 0.4], col: '#ff7a2e', tube: [0.16, 0.14, 0.12, 0.1, 0.08, 0], diff: [0.16, 0.12, 0.08], emerg: 0.7, fill: 0.55, fillCol: '#ff6a26', power: 1, warm: 0 },
 };
 // 日光燈啟動：幾次緩慢、低振幅的明暗起伏（每段 ≥ 0.35 秒，0.25 秒內變化 < 30%）
 const STARTUP_KEYS = [[0, 0], [0.12, 0.22], [0.24, 0.08], [0.4, 0.38], [0.52, 0.2], [0.7, 0.62], [0.8, 0.5], [1, 1]];
 const STARTUP_SOFT = [[0, 0], [0.45, 0.3], [1, 1]];
 const DECAL_TIERS = [[0.04, 0.3], [0.22, 0.52], [0.45, 0.76], [0.68, 0.98]];
 const DECAL_MAX = { waterStain: 0.85, soot: 0.9, scorch: 0.95 };
+
+// ---- 終幕濃煙（setSmoke 0..1 對應的煙層行為；可調） ----------------------------------
+// 煙層下緣高度（公尺）：先貼著天花板分層，再一路往下沉（banking down）
+const SMOKE_LAYER_Y = [[0, 3.2], [0.06, 2.95], [0.3, 2.3], [0.55, 1.95], [0.78, 1.55], [0.9, 1.2], [1, 0.25]];
+// 煙層每公尺消光係數
+const SMOKE_LAYER_K = [[0, 0], [0.05, 0], [0.22, 0.6], [0.55, 0.8], [0.8, 0.95], [1, 1.45]];
+const SMOKE_ALBEDO = 2.2;       // 煙被室內光照亮的程度（乘在光源強度上）
+const SMOKE_DESAT = 0.78;       // 煙色往亮度去飽和的比例（0 = 光源原色）
+const SMOKE_K_SPOT = 0.0065;    // 每盞日光燈（cd）對煙色的貢獻
+const SMOKE_K_FILL = 0.011;     // 補光（cd）對煙色的貢獻
+const SMOKE_FLOOR = new THREE.Color(0.006, 0.0048, 0.0038);
+const EMBER_MAX = 0.42;         // 焦黑龜裂的餘燼光（線性 HDR）
 
 /** 顏色過渡器 */
 class ColorFader {
@@ -85,8 +97,9 @@ export class ControlRoom {
     this.leds = new LedBank(360);
     this.glowTex = this.tex.get('glow');
     this.dialTex = LT.dialTexture();
-    this.LEVER_UP = 0.35;
-    this.LEVER_DOWN = 2.72;
+    // 通風拉桿（rotation.x；桿身沿 +Y、π/2 = 垂直面板伸出）：上 = 運轉、下 = 拉下/重啟，桿頭都在面板的拉桿槽範圍內
+    this.LEVER_UP = Math.PI / 2 - 0.5;
+    this.LEVER_DOWN = Math.PI / 2 + 0.5;
     this.endingNoteOffsetZ = 0.045; // 終幕便利貼往玩家方向偏移（避免與 CAM 按鈕座重疊）
     // 天花板特殊片：出風口、焦黑時下垂/脫落的天花板（格線索引見 buildShell.buildCeiling）
     this.ceilingSpecial = [
@@ -155,8 +168,8 @@ export class ControlRoom {
     this._intercomMode = 'off';
     this._ventMode = 'ok';
     this._ventGauge = null;
-    this._needle = 0.52;
-    this._ventLedCol = new THREE.Color(0, 0, 0);
+    this._needle = 0.62;
+    this._ventLedK = { run: 0, fault: 0, stop: 0 };
     this._intercomCol = new THREE.Color(0, 0, 0);
     this._blastState = 'locked';
     this._blastLampCol = new THREE.Color(0, 0, 0);
@@ -165,7 +178,20 @@ export class ControlRoom {
     this._penP = -1; this._penAct = 0;
     this._penBase = new THREE.Vector3();
     this._tok = {};
-    this._smokeTint = new THREE.Color();
+    /** 目前被室內光照亮的煙色（線性；states/common.js 用它設定霧色與 postfx 煙霾色）。唯讀。 */
+    this.smokeColor = new THREE.Color(0, 0, 0);
+    /** 濃煙外觀的可調參數（除錯/調校用）：光照倍率、去飽和、煙團上/下側亮度、煙層顏色倍率與濃度倍率、餘燼光。 */
+    this.smokeLook = { albedo: SMOKE_ALBEDO, desat: SMOKE_DESAT, top: 1.25, low: 0.85, warm: 0.7, layerCol: 0.75, layerK: 1, haze: 0.55, ember: EMBER_MAX };
+    /** 整片霧與 postfx 煙霾用的顏色（線性；smokeColor × smokeLook.haze）。唯讀。 */
+    this.hazeColor = new THREE.Color(0, 0, 0);
+    this._smokeTop = new THREE.Color();
+    this._smokeLow = new THREE.Color();
+    this.U.uBurnOrigin.value.set(L.minX, 1.7, L.blastDoor.z);
+    // 天花板片的焦黑門檻：離防爆門越遠越晚下垂/脫落（與表面焦黑的蔓延一致）
+    for (const tl of this.ceilingTiles || []) {
+      const d = Math.hypot(tl.pivot.position.x - L.minX, tl.pivot.position.z - L.blastDoor.z);
+      tl.thEff = clamp(0.12 + d * 0.075 + (tl.th - 0.5) * 0.25, 0.1, 0.8);
+    }
     this.setLighting('off', { duration: 0 });
     this.setClock(this._clockText);
     this.setCoffeeStage(0);
@@ -559,6 +585,7 @@ export class ControlRoom {
     this._ventGauge = null;
     this.setLighting('normal', { duration: 0 });
     for (const tl of this.ceilingTiles || []) { tl.pivot.rotation.set(0, 0, 0); if (tl.mat.transparent) tl.mat.opacity = 1; tl.pivot.visible = true; }
+    this.U.uLayerK.value = 0; this.U.uLayerY.value = 3.2; this.U.uEmberGlow.value = 0;
   }
   camButtonsReset() { for (const b of this.objects.camButtons || []) b.position.copy(b.userData.rest); }
 
@@ -582,12 +609,16 @@ export class ControlRoom {
 
     this.U.uDirt.value = c;
     this.U.uBurnt.value = b;
-    this.U.uEmber.value = b > 0.001 ? 0.05 * (1 - b * b) : 0;
+    this.U.uEmber.value = b > 0.001 ? 0.06 * (1 - b * b) : 0;
+    // 龜裂餘燼光：焦黑完成後慢慢亮起、濃煙中略被吞沒；起伏由著色器處理（光敏感模式不起伏）
+    this.U.uEmberGlow.value = this.smokeLook.ember * smoothstep(0.08, 0.55, b) * (1 - 0.45 * smoothstep(0.6, 1, s));
+    this.U.uEmberWobble.value = reduce ? 0 : 0.12;
+    this.U.uSfxTime.value = t;
 
     // ---- 燈光 ----
     const corrDim = 1 - 0.42 * c;
-    const smokeDim = 1 - 0.68 * s;
-    const burnDim = 1 - 0.3 * b;
+    const smokeDim = 1 - 0.42 * s;
+    const burnDim = 1 - 0.15 * b;
     const undA = reduce ? 0 : 0.12 * smoothstep(0.55, 1, c);
     const startK = [1, 1, 1];
     if (this._startup) {
@@ -673,10 +704,11 @@ export class ControlRoom {
     const crackOp = smoothstep(0.2, 0.7, b);
     for (const m of this._cracks) { m.material.opacity = crackOp; m.visible = crackOp > 0.003; }
     for (const tl of this.ceilingTiles || []) {
-      const a = smoothstep(tl.th, Math.min(1, tl.th + 0.4), b) * tl.angle;
+      const th = tl.thEff ?? tl.th;
+      const a = smoothstep(th, Math.min(1, th + 0.3), b) * tl.angle;
       if (tl.axis === 'z') tl.pivot.rotation.z = tl.sign * a; else tl.pivot.rotation.x = -tl.sign * a;
       if (tl.kind === 'missing') {
-        const op = 1 - smoothstep(tl.th + 0.1, tl.th + 0.4, b);
+        const op = 1 - smoothstep(th + 0.12, th + 0.4, b);
         tl.mat.opacity = op; tl.pivot.visible = op > 0.01;
       }
     }
@@ -694,16 +726,22 @@ export class ControlRoom {
     this._intercomCol.lerp(_tmpC.copy(icC).multiplyScalar(icK * live), 1 - Math.exp(-14 * dt));
     this._applyLed(this.parts.intercom.led, this._intercomCol);
     this.intercomRingMat.color.copy(this._intercomCol).multiplyScalar(0.7);
-    // 通風
-    let vK = 0, vC = LED_COLORS.green;
-    if (this._ventMode === 'ok') vK = 1;
-    else if (this._ventMode === 'fault') { vC = LED_COLORS.amber; vK = 0.62 + 0.38 * (0.5 + 0.5 * Math.sin((t * Math.PI * 2) / 1.6)); }
-    this._ventLedCol.lerp(_tmpC.copy(vC).multiplyScalar(vK * power * live), 1 - Math.exp(-10 * dt));
-    this._applyLed(this.parts.vent.led, this._ventLedCol);
+    // 通風：面板上的三顆狀態燈（運轉 綠／異常 琥珀，緩慢脈動／停止 紅；停電時全熄）
+    const vTarget = VENT_LED_K;
+    vTarget.run = this._ventMode === 'ok' ? 1 : 0;
+    vTarget.fault = this._ventMode === 'fault' ? 0.62 + 0.38 * (0.5 + 0.5 * Math.sin((t * Math.PI * 2) / 1.6)) : 0;
+    vTarget.stop = this._ventMode === 'off' ? 0.8 : 0;
+    const vk = 1 - Math.exp(-10 * dt);
+    const vLeds = this.parts.vent.leds;
+    for (const key of ['run', 'fault', 'stop']) {
+      this._ventLedK[key] += (vTarget[key] * power * live - this._ventLedK[key]) * vk;
+      vLeds?.[key]?.set(VENT_LED_COLORS[key], this._ventLedK[key]);
+    }
+    // 轉速表（0..1 = 0..1800 RPM，與面板上印的錶盤相同）：正常在綠區中段、異常在琥珀區
     let g = this._ventGauge;
     if (g == null) {
-      g = this._ventMode === 'ok' ? 0.52 + 0.012 * Math.sin(t * 7.3) + 0.008 * Math.sin(t * 12.7)
-        : this._ventMode === 'fault' ? 0.8 + 0.06 * Math.sin((t * Math.PI * 2) / 1.7) + 0.015 * Math.sin(t * 5.1) : 0;
+      g = this._ventMode === 'ok' ? 0.62 + 0.012 * Math.sin(t * 7.3) + 0.008 * Math.sin(t * 12.7)
+        : this._ventMode === 'fault' ? 0.82 + 0.05 * Math.sin((t * Math.PI * 2) / 1.7) + 0.012 * Math.sin(t * 5.1) : 0;
     }
     g *= power;
     this._needle = damp(this._needle, g, 1.6, dt);
@@ -742,13 +780,9 @@ export class ControlRoom {
 
     // ---- 蒸氣與濃煙 ----
     const mugVisible = this.objects.coffee.visible;
-    this.steam.update(dt, t, this._coffeeStage === 0 && mugVisible && b < 0.05, 0.6 + 0.4 * this._overallLevel);
-    // 煙色：深灰黑，只沾一點室內光的顏色
-    const tint = this._smokeTint.setRGB(0.016, 0.015, 0.014);
-    const lc = this.roomLights[0].color;
-    const lk = 0.035 * (this._overallLevel + emerg * 0.5);
-    tint.r += lc.r * lk; tint.g += lc.g * lk; tint.b += lc.b * lk;
-    this.smoke.update(dt, t, s, tint);
+    // 焦黑退去到一半就開始冒蒸氣（終幕回到桌面時看得到「熱咖啡回來了」）
+    this.steam.update(dt, t, this._coffeeStage === 0 && mugVisible && b < 0.4 && s < 0.5, 0.6 + 0.4 * this._overallLevel);
+    this._updateSmoke(dt, t, s, emerg);
 
     // ---- 筆（寫字時輕微擺動） ----
     const pen = this.objects.pen;
@@ -765,6 +799,50 @@ export class ControlRoom {
   }
 
   _applyLed(led, col, glowK = 0.35) { led?.setColor(col, glowK); }
+
+  /** 濃煙：依室內光算煙色 → 煙層（表面著色器）＋翻滾的煙團（單一 draw call）。 */
+  _updateSmoke(dt, t, s, emerg) {
+    const look = this.smokeLook;
+    // 室內光（日光燈＋補光）照在煙上的量與顏色
+    const light = _tmpL.setRGB(0, 0, 0);
+    for (const Lt of this.roomLights) light.r += Lt.color.r * Lt.intensity * SMOKE_K_SPOT, light.g += Lt.color.g * Lt.intensity * SMOKE_K_SPOT, light.b += Lt.color.b * Lt.intensity * SMOKE_K_SPOT;
+    const fl = this.fillLight;
+    light.r += fl.color.r * fl.intensity * SMOKE_K_FILL; light.g += fl.color.g * fl.intensity * SMOKE_K_FILL; light.b += fl.color.b * fl.intensity * SMOKE_K_FILL;
+    light.r += 0.004 * emerg;   // 緊急紅燈罩的殘光
+    light.multiplyScalar(look.albedo);
+    // 煙（灰黑的煙灰）只帶一部分光源的顏色：往亮度去飽和，成為暖灰
+    const sc = this.smokeColor.copy(light);
+    const lum = 0.2126 * sc.r + 0.7152 * sc.g + 0.0722 * sc.b;
+    sc.lerp(_tmpC.setRGB(lum * 1.12, lum, lum * 0.86), look.desat);
+    sc.r = Math.max(sc.r, SMOKE_FLOOR.r); sc.g = Math.max(sc.g, SMOKE_FLOOR.g); sc.b = Math.max(sc.b, SMOKE_FLOOR.b);
+    // 整片霧／後期煙霾的顏色：比煙團暗（讓畫面變暗變濁，而不是蒙上一層亮褐色）
+    this.hazeColor.copy(sc).multiplyScalar(look.haze);
+    const U = this.U;
+    const layerY = keyCurve(SMOKE_LAYER_Y, s);
+    this.smokeLayerY = layerY;
+    U.uLayerY.value = layerY;
+    U.uLayerK.value = keyCurve(SMOKE_LAYER_K, s) * look.layerK;
+    U.uLayerCol.value.copy(sc).multiplyScalar(look.layerCol);
+    if (s < 0.0005 && !this.smoke.visibleCount && this._f.smoke.to <= 0) { if (this.smoke.mesh.visible) this.smoke.reset(); return; }
+    const P = this.parts.blast;
+    const doorOpen = P ? clamp(P.door.position.z / Math.max(0.01, this.L.blastDoor.slide)) : 0;
+    const fog = this.ctx.scene.fog;
+    this.smoke.update(dt, t, {
+      level: s,
+      flowing: this._f.smoke.to > 0.02,
+      doorOpen,
+      layerY,
+      // 煙團：上側灰（日光燈）、下側帶一點火光的暖橘（焦黑牆面的餘燼與終幕燈光從下方照上來）
+      litTop: this._smokeTop.copy(sc).multiplyScalar(look.top),
+      litLow: this._smokeLow.copy(sc).lerp(light, look.warm).multiplyScalar(look.low),
+      fogColor: fog?.color || sc,
+      fogDensity: fog?.density || 0,
+      camera: this.ctx.camera,
+    });
+  }
 }
 
 const _tmpC = new THREE.Color();
+const _tmpL = new THREE.Color();
+const VENT_LED_K = { run: 0, fault: 0, stop: 0 };
+const VENT_LED_COLORS = { run: LED_COLORS.green, fault: LED_COLORS.amber, stop: LED_COLORS.red };
