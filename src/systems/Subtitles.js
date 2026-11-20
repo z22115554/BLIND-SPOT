@@ -24,34 +24,39 @@ const CSS = `
   display: grid; justify-items: center; align-items: end; width: min(42em, 92vw); pointer-events: none; }
 .bs-mono { position: absolute; left: 50%; top: 62%; transform: translate(-50%, -50%); z-index: 3;
   display: grid; justify-items: center; align-items: center; width: min(40em, 90vw); pointer-events: none; }
-.bs-sub { grid-area: 1 / 1; position: relative; max-width: 100%; text-align: center; opacity: 0;
+.bs-sub { grid-area: 1 / 1; position: relative; isolation: isolate; max-width: 100%; text-align: center; opacity: 0;
   transition-property: opacity; transition-timing-function: ease; }
 .bs-sub.is-on { opacity: 1; }
+/* 柔邊暗幕：不是裝飾，是讓字幕在亮場景（日光燈下的控制台）與暗場景都讀得清楚 */
+.bs-sub::before { content: ''; position: absolute; z-index: -1; inset: -1.1em -2.6em; border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(3, 3, 3, 0.7), rgba(3, 3, 3, 0.55) 50%, rgba(3, 3, 3, 0.2) 80%, rgba(3, 3, 3, 0) 100%); }
 .bs-sub--normal { padding: 0.55em 1.35em 0.7em; }
-.bs-sub--normal::before { content: ''; position: absolute; inset: 0.2em 0.4em; z-index: -1; border-radius: 1em;
-  background: rgba(5, 5, 5, 0.44); box-shadow: 0 0 1.6em 1em rgba(5, 5, 5, 0.44); }
-.bs-sub__speaker { display: flex; align-items: center; justify-content: center; gap: 0.75em; margin-bottom: 0.5em;
-  font-size: 0.72em; letter-spacing: 0.32em; color: var(--bs-amber); text-shadow: 0 0 0.4em rgba(0, 0, 0, 0.9); }
+.bs-sub__speaker { display: flex; align-items: center; justify-content: center; gap: 0.75em; margin-bottom: 0.45em;
+  font-size: 0.74em; letter-spacing: 0.32em; color: var(--bs-amber); text-shadow: 0 0 0.4em rgba(0, 0, 0, 0.9); }
 .bs-sub__speaker::before, .bs-sub__speaker::after { content: ''; width: 1.5em; height: 1px; background: rgba(216, 176, 74, 0.42); }
 .bs-sub__text { font-size: 1.22em; line-height: 1.7; letter-spacing: 0.06em; color: var(--bs-fg); text-wrap: balance;
-  text-shadow: 0 0 0.25em rgba(0, 0, 0, 0.95), 0 0 0.9em rgba(0, 0, 0, 0.6); }
+  text-shadow: 0 0 0.2em rgba(0, 0, 0, 0.95), 0 0 0.8em rgba(0, 0, 0, 0.7); }
 .bs-sub__text strong { font-weight: 700; color: var(--bs-bright); }
 .bs-sub__text em { font-style: italic; }
-.bs-sub .bs-sfx { color: var(--bs-dim); font-size: 0.86em; letter-spacing: 0.1em; }
+.bs-sub .bs-sfx { color: #a29c8f; font-size: 0.86em; letter-spacing: 0.1em; }
 .bs-seg--new { animation: bs-seg-in 0.6s ease both; }
 @keyframes bs-seg-in { from { opacity: 0; } to { opacity: 1; } }
 
-.bs-sub--monologue { padding: 0.4em 1em; }
+.bs-sub--monologue { padding: 0.5em 1.2em; }
+.bs-sub--monologue::before { inset: -1.4em -3.2em; }
 .bs-sub--monologue .bs-sub__text { font-family: var(--bs-serif); font-size: 1.72em; line-height: 1.85; letter-spacing: 0.16em;
-  color: #e6e1d4; text-shadow: 0 0 0.45em rgba(0, 0, 0, 0.92), 0 0 1.6em rgba(0, 0, 0, 0.65); }
+  color: #e6e1d4; text-shadow: 0 0 0.35em rgba(0, 0, 0, 0.92), 0 0 1.4em rgba(0, 0, 0, 0.65); }
 .bs-sub--monologue .bs-sfx { color: var(--bs-dim); }
 
-.bs-sub--direction { padding: 0.4em 1em; }
-.bs-sub--direction .bs-sub__text { font-size: 0.98em; font-style: italic; letter-spacing: 0.14em; color: var(--bs-dim);
-  text-shadow: 0 0 0.35em rgba(0, 0, 0, 0.95), 0 0 1em rgba(0, 0, 0, 0.7); }
+.bs-sub--direction { padding: 0.45em 1.2em; }
+.bs-sub--direction::before { inset: -1.2em -2.4em; }
+.bs-sub--direction .bs-sub__text { font-size: 1.02em; font-style: italic; letter-spacing: 0.14em; color: #b3ad9f;
+  text-shadow: 0 0 0.3em rgba(0, 0, 0, 0.95), 0 0 0.9em rgba(0, 0, 0, 0.75); }
 .bs-sub--direction .bs-sfx { color: inherit; font-size: 1em; }
 
 @media (max-width: 640px) {
+  .bs-subs { width: 94vw; }
+  .bs-sub::before { inset: -0.5em -0.8em; }
   .bs-sub__text { font-size: 1.12em; }
   .bs-sub--monologue .bs-sub__text { font-size: 1.42em; letter-spacing: 0.1em; }
 }

@@ -9,8 +9,11 @@
 // 實作說明：
 //   * EffectComposer 使用 HalfFloat 目標（線性 HDR）；場景目標啟用 MSAA（保留 renderer 的反鋸齒），
 //     中間目標不做 MSAA。最終 ShaderPass 在 tone mapping 之前（線性色彩）運算，OutputPass 負責 ACES + sRGB。
-//   * 為了讓「數值變化 ≒ 感知亮度變化」（配合 0.25 秒內亮度變化 ≤ 30% 的規則），
-//     fade / dim / vignette 以感知空間（γ≈2.2）換算成線性乘數：fade 0.5 ≒ 畫面看起來一半亮。
+//   * 為了讓「數值變化 ≒ 畫面亮度變化」（配合 0.25 秒內亮度變化 ≤ 30% 的規則），fade 換算成
+//     tone mapping 前的乘數 (1 - fade)^1.15（dim 為 (1 - 0.9·dim)^1.3，0.78 時背景約剩 1/4 亮度）：
+//     three 的 ACES 曲線在暗部近乎線性（並有硬黑截斷），
+//     實測這個主控室的亮度範圍內 fade 0.5 ≒ 畫面看起來一半亮（若用 γ2.2 換算，fade 0.5 只剩約 23%，
+//     淡入會在最後一段才突然亮起來）。暈影仍以感知空間 (v^2.2) 塑形。
 //   * 顆粒：在感知空間加上、依亮度加權（中間調最明顯、亮部減弱、純黑幾乎沒有），尺寸隨解析度縮放（4K 不會變成細砂）。
 //     光敏感模式：振幅 40%、約每秒 6 次才換一次顆粒圖樣；色差關閉。
 //   * smoke：畫面柔化（光源在煙中暈開）＋往褐灰色煙霾混合（低頻雜訊緩慢飄移，上方較濃）＋整體變暗。
@@ -132,10 +135,10 @@ const FinalShader = {
         vec2 sp = vec2(d.x * aspect, d.y) * 1.7;
         float n = vnoise(sp * 1.25 + vec2(uTime * 0.031, -uTime * 0.052)) * 0.62
                 + vnoise(sp * 3.1 + vec2(-uTime * 0.047, -uTime * 0.083) + 7.3) * 0.38;
-        float dens = uSmoke * (0.68 + 0.6 * (n - 0.5) + 0.22 * uv.y);
-        vec3 haze = uSmokeColor * (0.62 + 0.76 * n) + soft * uTint * 0.32;
-        col = mix(col, haze, clamp(dens, 0.0, 0.93));
-        col *= 1.0 - 0.32 * uSmoke;
+        float dens = uSmoke * (0.7 + 0.6 * (n - 0.5) + 0.22 * uv.y);
+        vec3 haze = uSmokeColor * (0.5 + 0.9 * n) + soft * uTint * 0.3;   // 光源在煙裡暈開
+        col = mix(col, haze, clamp(dens, 0.0, 0.94));
+        col *= 1.0 - 0.42 * uSmoke;
       }
 
       // ---- 檢視背景變暗：去飽和＋變暗 ----
@@ -144,25 +147,30 @@ const FinalShader = {
         col *= uDimMul;
       }
 
-      // ---- 暈影（感知空間換算）----
+      // ---- 暈影：中央大部分不受影響，往四角平滑變暗（預設 0.42：桌面角落約 -20%、畫面最角落約 -40%）----
       if (uVignette > 0.001) {
-        float vr = length(vec2(d.x * mix(1.0, aspect, 0.3), d.y));
-        float v = 1.0 - uVignette * smoothstep(0.22, 0.98, vr);
+        float vr = length(vec2(d.x * mix(1.0, aspect, 0.35), d.y));
+        float v = 1.0 - uVignette * 0.7 * smoothstep(0.34, 0.96, vr);
         col *= pow(max(v, 0.0), 2.2);
       }
 
-      // ---- 底片顆粒：感知空間、依亮度加權 ----
+      // ---- 底片顆粒：感知空間、依亮度加權（中間調最明顯；純黑與高光幾乎沒有）----
+      // 兩層：約 1.3 px 的柔和顆粒團（value noise）＋每像素的細顆粒（三角分佈），單色。
+      // 預設 0.07 → 中間調標準差約 3.5/255，足以有底片質感又不會吃掉貼圖細節。
       if (uGrain > 0.0005) {
-        vec2 gp = gl_FragCoord.xy / uGrainScale + vec2(uSeed * 37.0, uSeed * 59.0);
-        float g = (vnoise(gp) - 0.5) * 0.75 + (hash12(gp * 1.37 + 11.0) - 0.5) * 0.45;
+        vec2 fc = gl_FragCoord.xy;
+        vec2 gp = fc / uGrainScale + vec2(uSeed * 37.0, uSeed * 59.0);
+        float clump = vnoise(gp) - 0.5;
+        float fine = hash12(fc + uSeed * 113.0) + hash12(fc.yx * 1.31 + uSeed * 71.0 + 17.0) - 1.0;
+        float g = clump * 0.62 + fine * 0.3;
         vec3 pc = pow(max(col, 0.0), vec3(1.0 / 2.2));
         float pl = luma(pc);
-        float w = mix(0.12, 1.0, smoothstep(0.02, 0.3, pl)) * (1.0 - 0.6 * smoothstep(0.5, 1.0, pl));
-        pc += g * uGrain * 2.4 * w;
+        float w = smoothstep(0.015, 0.22, pl) * (1.0 - 0.55 * smoothstep(0.55, 1.0, pl));
+        pc += g * uGrain * 1.05 * w;
         col = pow(max(pc, 0.0), vec3(2.2));
       }
 
-      // ---- 淡出（感知線性；1 = 全黑）----
+      // ---- 淡出（1 = 全黑；乘數見 render()）----
       col *= uFadeMul;
 
       gl_FragColor = vec4(col, 1.0);
@@ -186,9 +194,12 @@ export class PostFX {
     const pr = r.getPixelRatio();
     const size = r.getSize(new THREE.Vector2());
     // 場景目標：HalfFloat + MSAA（composer 會把它 clone 成第二個目標）
+    // 沒有 EXT_color_buffer_float 時，HalfFloat 的多重取樣緩衝可能不完整 → 不用 MSAA
+    let floatMSAA = true;
+    try { floatMSAA = !!r.extensions?.has?.('EXT_color_buffer_float'); } catch (e) { floatMSAA = false; }
     const rt = new THREE.WebGLRenderTarget(Math.max(1, size.x * pr), Math.max(1, size.y * pr), {
       type: THREE.HalfFloatType,
-      samples: pr < 1.5 ? 4 : 2,
+      samples: floatMSAA ? (pr < 1.5 ? 4 : 2) : 0,
     });
     rt.texture.name = 'PostFX.rt';
     this.composer = new EffectComposer(r, rt);
@@ -211,7 +222,7 @@ export class PostFX {
     const p = this.params;
     const tok = (this._tweenTok[param] = (this._tweenTok[param] || 0) + 1);
     if (param === 'tint' || p[param]?.isColor) {
-      const from = (p.tint?.isColor ? p.tint : new THREE.Color(1, 1, 1)).clone();
+      const from = (p[param]?.isColor ? p[param] : new THREE.Color(1, 1, 1)).clone();
       const target = value?.isColor ? value.clone() : new THREE.Color(value);
       if (!p[param]?.isColor) p[param] = from.clone();
       const out = p[param];
@@ -264,12 +275,12 @@ export class PostFX {
     u.uVignette.value = clamp01(p.vignette);
     u.uGrain.value = clamp01(p.grain) * (calm ? 0.4 : 1);
     u.uChromatic.value = calm ? 0 : Math.max(0, Number(p.chromatic) || 0);
-    u.uFadeMul.value = Math.pow(1 - fade, 2.2);
+    u.uFadeMul.value = Math.pow(1 - fade, 1.15);
     u.uDim.value = dim;
-    u.uDimMul.value = Math.pow(1 - 0.8 * dim, 2.2);
+    u.uDimMul.value = Math.pow(1 - 0.9 * dim, 1.3);     // dim 0.78 → 背景約剩 1/4 亮度（檢視時物件與文字才跳得出來）
     u.uDesat.value = clamp01(p.desaturate);
     u.uSmoke.value = smoke;
-    u.uSoft.value = Math.max(smoke * 0.7, dim * 0.85);
+    u.uSoft.value = Math.max(smoke * 0.62, dim * 0.85);
     if (p.tint?.isColor) u.uTint.value.copy(p.tint);
     else if (p.tint != null) u.uTint.value.set(p.tint);
     u.uExposure.value = Math.max(0, Number(p.exposure ?? 1));

@@ -49,7 +49,10 @@ const CSS = `
 
 .bs-obj { position: absolute; left: max(1.4em, 3.2vw); top: max(1.3em, 4.4vh); z-index: 2; display: grid;
   width: min(28em, 64vw); transition: opacity 0.6s ease; }
-.bs-obj__item { grid-area: 1 / 1; opacity: 0; transition: opacity 0.6s ease; }
+.bs-obj__item { grid-area: 1 / 1; position: relative; isolation: isolate; justify-self: start; max-width: 100%;
+  opacity: 0; transition: opacity 0.6s ease; }
+.bs-obj__item::before { content: ''; position: absolute; z-index: -1; inset: -1.6em -2.2em -1.5em -2em; border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(3, 3, 3, 0.62), rgba(3, 3, 3, 0.48) 50%, rgba(3, 3, 3, 0.16) 80%, rgba(3, 3, 3, 0) 100%); }
 .bs-obj__item.is-on { opacity: 1; }
 .bs-obj__stamp { display: flex; align-items: center; gap: 0.9em; font-family: var(--bs-mono); font-size: 0.72em;
   letter-spacing: 0.3em; color: var(--bs-amber); text-shadow: var(--bs-shadow); min-height: 1.2em; }
@@ -57,13 +60,16 @@ const CSS = `
 .bs-obj__text { margin-top: 0.45em; font-size: 0.94em; line-height: 1.6; letter-spacing: 0.08em; color: var(--bs-fg);
   text-shadow: var(--bs-shadow); }
 
-.bs-hint { position: absolute; left: 50%; top: max(1.4em, 6.2vh); transform: translateX(-50%); z-index: 2;
+.bs-hint { position: absolute; left: 50%; top: max(1.4em, 6.2vh); transform: translateX(-50%); z-index: 2; isolation: isolate;
   width: max-content; max-width: min(36em, 88vw); padding: 0.45em 1.2em; text-align: center;
   font-size: 0.88em; letter-spacing: 0.16em; line-height: 1.7; color: var(--bs-fg); text-shadow: var(--bs-shadow);
   opacity: 0; transition-property: opacity; transition-timing-function: ease; }
 .bs-hint.is-on { opacity: 0.92; }
+.bs-hint::before { content: ''; position: absolute; z-index: -1; inset: -0.9em -1.6em; border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(3, 3, 3, 0.6), rgba(3, 3, 3, 0.45) 50%, rgba(3, 3, 3, 0.14) 80%, rgba(3, 3, 3, 0) 100%); }
 
 #ui-root.bs-inspecting .bs-prompt, #ui-root.bs-inspecting .bs-cross { opacity: 0 !important; }
+#ui-root.bs-menu .bs-prompt, #ui-root.bs-menu .bs-cross, #ui-root.bs-menu .bs-obj { opacity: 0 !important; }
 #ui-root.bs-inspecting .bs-obj { opacity: 0.3; }
 
 /* ---------- 電影黑邊 ---------- */
@@ -74,15 +80,18 @@ const CSS = `
 
 /* ---------- 共用：設定控制項、按鈕、操作說明 ---------- */
 .bs-settings { color: var(--bs-dim); }
-.bs-set { display: inline-flex; align-items: center; gap: 0.9em; font-size: 0.8em; letter-spacing: 0.1em; cursor: pointer; }
+.bs-set { display: inline-flex; align-items: center; gap: 0.9em; font-size: 0.84em; letter-spacing: 0.1em; cursor: pointer; }
 .bs-set__label { white-space: nowrap; }
 .bs-set__value { min-width: 3.4em; font-family: var(--bs-mono); font-size: 0.95em; letter-spacing: 0.04em; color: var(--bs-fg); }
-.bs-settings--row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.9em 2.4em; }
-.bs-settings--stack { display: grid; grid-template-columns: max-content minmax(6em, 1fr) max-content; align-items: center; gap: 1.25em 1.4em; }
+.bs-settings--row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.9em 2em; }
+.bs-settings--row .bs-range { width: 6.6em; }
+.bs-settings--stack { display: grid; grid-template-columns: max-content minmax(6em, 1fr) max-content; align-items: center;
+  gap: 1.15em 1.3em; font-size: 0.88em; }
+.bs-settings--stack .bs-set { font-size: 1em; }
 .bs-settings--stack .bs-set--range { display: contents; }
-.bs-settings--stack .bs-set--range > * { font-size: 0.8em; }
-.bs-settings--stack .bs-set--range > .bs-range { font-size: 0.8em; width: 100%; }
-.bs-settings--stack .bs-set--check { grid-column: 1 / -1; }
+.bs-settings--stack .bs-range { width: 100%; }
+.bs-settings--stack .bs-set__value { text-align: right; }
+.bs-settings--stack .bs-set--check { grid-column: 1 / -1; margin-top: 0.2em; }
 
 .bs-range { -webkit-appearance: none; appearance: none; width: 8em; height: 1.5em; margin: 0; padding: 0;
   background: transparent; cursor: pointer; --p: 50%; }
@@ -146,21 +155,31 @@ const CSS = `
 .bs-title__start:hover, .bs-title__start:focus-visible { animation-play-state: paused; opacity: 1; outline: none; color: var(--bs-bright); }
 .bs-title__start:hover .bs-tick, .bs-title__start:focus-visible .bs-tick { width: 3.2em; }
 .bs-title__loop { font-family: var(--bs-mono); font-size: 0.76em; letter-spacing: 0.3em; color: var(--bs-amber); }
-.bs-title__bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1.1em 3em;
+.bs-title__main { position: relative; }
+.bs-title__feed { position: absolute; right: max(1.4em, 8.5vw); bottom: 2.9em; display: grid; justify-items: end; gap: 0.55em;
+  font-family: var(--bs-mono); font-size: 0.72em; letter-spacing: 0.18em; line-height: 1.5; color: var(--bs-dim); opacity: 0.55;
+  text-align: right; }
+.bs-title__feed-head { display: flex; align-items: center; gap: 0.9em; color: var(--bs-fg); opacity: 0.8; }
+.bs-title__feed-head::before { content: ''; width: 0.5em; height: 0.5em; border-radius: 50%; background: var(--bs-alert); opacity: 0.75; }
+.bs-title__feed-rule { width: 9em; height: 1px; background: var(--bs-rule); }
+@media (max-width: 1000px), (max-height: 560px) { .bs-title__feed { display: none; } }
+.bs-title__bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1.1em 2.4em;
   padding: 1.25em max(1.4em, 8.5vw) max(1.4em, 3.2vh); border-top: 1px solid var(--bs-rule); }
 
 /* ---------- 暫停 ---------- */
 .bs-pause { position: absolute; inset: 0; z-index: 8; pointer-events: auto; display: grid; place-items: center;
-  padding: 2em 1.2em; overflow-y: auto; background: rgba(0, 0, 0, 0.74); cursor: pointer;
+  padding: 2em 1.2em; overflow-y: auto; background: rgba(2, 2, 2, 0.8); cursor: pointer;
   opacity: 0; transition-property: opacity; transition-timing-function: ease; }
 .bs-pause.is-on { opacity: 1; }
-.bs-pause__panel { width: min(30em, 100%); }
+.bs-pause__panel { position: relative; isolation: isolate; width: min(30em, 100%); }
+.bs-pause__panel::before { content: ''; position: absolute; z-index: -1; inset: -4em -6em; border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.6) 55%, rgba(0, 0, 0, 0) 100%); pointer-events: none; }
 .bs-pause__title { margin: 0 -0.5em 0 0; text-align: center; font-family: var(--bs-serif); font-weight: 500;
   font-size: 2.5em; line-height: 1.2; letter-spacing: 0.5em; color: var(--bs-fg); }
 .bs-pause__resume { margin: 1.1em 0 2.6em; text-align: center; font-size: 0.95em; letter-spacing: 0.3em; color: var(--bs-fg);
   animation: bs-breathe 4.2s ease-in-out infinite; }
 .bs-pause__rule { height: 1px; margin: 0 0 1.9em; background: var(--bs-rule); }
-.bs-pause .bs-settings { cursor: default; margin-bottom: 1.9em; }
+.bs-pause .bs-settings { cursor: default; margin-bottom: 1.9em; color: #a8a295; }
 .bs-pause .bs-controls { justify-content: center; }
 
 /* ---------- 終幕選擇 ---------- */
@@ -213,10 +232,13 @@ const CSS = `
   .bs-title__bar .bs-settings--row { display: grid; grid-template-columns: max-content minmax(5em, 1fr) max-content;
     align-items: center; gap: 1.15em 1.1em; }
   .bs-title__bar .bs-settings--row .bs-set--range { display: contents; }
-  .bs-title__bar .bs-settings--row .bs-set--range > * { font-size: 0.8em; }
+  .bs-title__bar .bs-settings--row { font-size: 0.88em; }
+  .bs-title__bar .bs-settings--row .bs-set { font-size: 1em; }
   .bs-title__bar .bs-settings--row .bs-range { width: 100%; }
+  .bs-title__bar .bs-settings--row .bs-set__value { text-align: right; }
   .bs-title__bar .bs-settings--row .bs-set--check { grid-column: 1 / -1; }
   .bs-controls { gap: 0.6em 1.2em; }
+  .bs-hint { top: calc(max(1.3em, 4.4vh) + 5.4em); max-width: 90vw; }
   .bs-pause__title { font-size: 2em; }
   .bs-end__choices { flex-direction: column; align-items: center; }
 }
@@ -402,7 +424,7 @@ export class UI {
       const main = el('div', 'bs-title__main');
       main.append(el('div', 'bs-title__stamp', this.ctx.CLOCK?.start || '02:00'));
       let coarse = false;
-      try { coarse = window.matchMedia?.('(pointer: coarse)').matches && !window.matchMedia?.('(pointer: fine)').matches; } catch (e) { /* ignore */ }
+      try { coarse = !!window.matchMedia?.('(pointer: coarse)').matches; } catch (e) { /* ignore */ }
       if (coarse) main.append(el('div', 'bs-title__touch', T.touchNotice || TOUCH_NOTICE));
       main.append(el('h1', 'bs-title__zh', T.zh || ''), el('p', 'bs-title__en', T.en || ''));
       const notes = el('ul', 'bs-title__notes');
@@ -415,6 +437,14 @@ export class UI {
       this.titleLoop = el('span', 'bs-title__loop');
       actions.append(this.titleStart, this.titleLoop);
       main.append(actions);
+      // 右下角：CAM-03 的頻道說明（淡淡的，只是預告；文字全部來自 SCRIPT.cams）
+      const cam = this.ctx.SCRIPT?.cams?.[3];
+      if (cam) {
+        const feed = el('div', 'bs-title__feed');
+        feed.setAttribute('aria-hidden', 'true');
+        feed.append(el('div', 'bs-title__feed-head', `${cam.id}  ${cam.place}`), el('div', 'bs-title__feed-rule'), el('div', '', cam.ld));
+        main.append(feed);
+      }
       const bar = el('footer', 'bs-title__bar');
       bar.append(this._buildControls(), this._buildSettings('row'));
       t.append(main, bar);
@@ -434,7 +464,7 @@ export class UI {
     this._titleStarted = false;
     const n = Number(this.ctx.flags?.loopCount) || 0;
     const loopFn = this.ctx.SCRIPT?.endChoice?.loop;
-    this.titleLoop.textContent = n > 0 && typeof loopFn === 'function' ? loopFn(n + 1) : '';
+    this.titleLoop.textContent = n > 0 && typeof loopFn === 'function' ? loopFn(n) : '';
     this.titleLoop.hidden = !(n > 0);
     this._syncSettingsViews();
     reveal(this.titleEl, true, 900);
@@ -579,6 +609,7 @@ export class UI {
     this.root.append(d);
     this.endEl = d;
     this._endVisible = true;
+    this._syncMenuClass();
     const shownAt = performance.now();
     let used = false;
     const pick = (fn) => (e) => {
@@ -595,6 +626,7 @@ export class UI {
 
   hideEndChoice() {
     this._endVisible = false;
+    this._syncMenuClass();
     const d = this.endEl;
     if (!d) return;
     d.style.pointerEvents = 'none';
@@ -612,6 +644,7 @@ export class UI {
     this.root.append(c);
     this.creditsEl = c;
     this._creditsVisible = true;
+    this._syncMenuClass();
     let skip = null;
     c.addEventListener('click', () => { skip?.(); });
     const clock = this.ctx.clock;
@@ -642,6 +675,7 @@ export class UI {
       }
       if (!alive()) return;
       this._creditsVisible = false;
+      this._syncMenuClass();
       try { onDone?.(); } catch (err) { console.error('[ui] credits onDone failed', err); }
       if (this.creditsEl === c) {
         c.style.pointerEvents = 'none';
@@ -676,11 +710,14 @@ export class UI {
     if (this.creditsEl) {
       this._creditsToken++;
       this._creditsVisible = false;
+      this._syncMenuClass();
       const c = this.creditsEl;
       c.style.pointerEvents = 'none';
       reveal(c, false, 700).then(() => { if (this.creditsEl === c) { c.remove(); this.creditsEl = null; } });
     }
   }
+
+  _syncMenuClass() { this.root.classList.toggle('bs-menu', !!(this._endVisible || this._creditsVisible)); }
 
   /** 除錯資訊（?debug=1 時右上角顯示）。 */
   debugText(str) {

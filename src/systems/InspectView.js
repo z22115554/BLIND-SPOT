@@ -173,11 +173,11 @@ export class InspectView {
     // 關閉輸入：E / Esc / 滑鼠左右鍵
     window.addEventListener('keydown', (e) => {
       if (!this.isOpen || e.repeat) return;
-      if (e.code === 'KeyE' || e.key === 'e' || e.key === 'E' || e.key === 'Escape') this._requestClose();
+      if (e.code === 'KeyE' || e.key === 'e' || e.key === 'E' || e.key === 'Escape') this._requestClose(e);
     });
     window.addEventListener('mousedown', (e) => {
       if (!this.isOpen) return;
-      if (e.button === 0 || e.button === 2) this._requestClose();
+      if (e.button === 0 || e.button === 2) this._requestClose(e);
     });
     window.addEventListener('contextmenu', (e) => { if (this.isOpen || this.opacity > 0) e.preventDefault(); });
     // 滑鼠移動（指標鎖定或一般）旋轉物件
@@ -282,7 +282,8 @@ export class InspectView {
       const k = easeInOut(this.opacity);
       this.pitchGroup.scale.setScalar(0.93 + 0.07 * k);
       this.pitchGroup.position.y = (1 - k) * -0.02;
-      if (this.isOpen) this._layout();
+      // 面板滑入的 CSS 轉場期間跟著重算位置；之後只在 resize 時重算（避免每幀強制排版）
+      if (this.isOpen && performance.now() - this._openedAt < 1300) this._layout();
     }
   }
 
@@ -292,7 +293,9 @@ export class InspectView {
     const pr = renderer.getPixelRatio();
     const px = Math.max(64, Math.min(1600, Math.round(this._rect.size * pr)));
     if (!this.rt) {
-      this.rt = new THREE.WebGLRenderTarget(px, px, { type: THREE.HalfFloatType, samples: 4 });
+      let msaa = 4;
+      try { if (!renderer.extensions?.has?.('EXT_color_buffer_float')) msaa = 0; } catch (e) { msaa = 0; }
+      this.rt = new THREE.WebGLRenderTarget(px, px, { type: THREE.HalfFloatType, samples: msaa });
       this.rt.texture.name = 'InspectView.rt';
     } else if (this.rt.width !== px) {
       this.rt.setSize(px, px);
@@ -326,10 +329,14 @@ export class InspectView {
   }
 
   // ---------------------------------------------------------------------------
-  _requestClose() {
+  _requestClose(e = null) {
     if (!this.isOpen) return;
     if (this.ctx.clock?.paused) return;
-    if (performance.now() - this._openedAt < INPUT_GUARD_MS) return;
+    // 以輸入事件「發生」的時間判斷（主執行緒忙碌時事件可能晚一點才被處理）；開啟前就按下的那一下也會被忽略
+    const now = performance.now();
+    let at = Number(e?.timeStamp);
+    if (!(at > 0) || at > now + 1000) at = now;   // 舊式 epoch 時間戳或缺值 → 用目前時間
+    if (at - this._openedAt < INPUT_GUARD_MS) return;
     this._pendingClose = true;    // 本幀最後（update）才真正關閉
   }
 
@@ -380,7 +387,7 @@ export class InspectView {
     const holder = new THREE.Group();
     holder.add(clone);
     holder.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(clone);
+    const box = InspectView._visibleBox(clone);
     const size = new THREE.Vector3(0.1, 0.1, 0.1), center = new THREE.Vector3();
     if (!box.isEmpty()) { box.getSize(size); box.getCenter(center); }
     const maxDim = Math.max(size.x, size.y, size.z, 1e-4);
@@ -412,6 +419,21 @@ export class InspectView {
     this.camera.far = dist + radius * 3;
     this.camera.lookAt(0, 0, 0);
     this.camera.updateProjectionMatrix();
+  }
+
+  /** 只計算「看得見」的網格（略過隱藏的互動 hitbox、粒子、線段），避免隱形碰撞盒讓物件縮小又偏心。 */
+  static _visibleBox(root) {
+    const box = new THREE.Box3(), tmp = new THREE.Box3();
+    root.updateMatrixWorld(true);
+    root.traverseVisible((o) => {
+      if (!o.isMesh || !o.geometry || o.userData?.hitbox || o.userData?.noInspect) return;
+      if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+      if (!o.geometry.boundingBox) return;
+      tmp.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld);
+      box.union(tmp);
+    });
+    if (box.isEmpty()) box.setFromObject(root);   // 退回：整棵樹
+    return box;
   }
 
   _detachObject() {
