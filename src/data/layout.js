@@ -67,8 +67,9 @@ export const CORRIDOR = {
   ditch: { z: 2.62, width: 0.3 },
   // 防火門：主廊道北牆（z = 1.2），門中心 x；玻璃窗尺寸
   fireDoor: { x: 20, z: 1.2, width: 1.2, height: 2.1, glass: { w: 0.62, h: 0.8, y: 1.45 } },
-  // 車燈幻影觸發：玩家第一次走到 x > triggerX
-  headlightTriggerX: 16.5,
+  // 車燈幻影觸發：玩家第一次走到 x > triggerX（門前約 1.6 m；光斑要先花 ~1.7 秒慢慢亮起，
+  // 玩家走過門後約 1.3 m 時才剛好站進光束 → 自己的影子落在右前方南牆的光斑裡）
+  headlightTriggerX: 18.4,
   // 關鍵線索位置
   watch: { x: 12.5, y: 0.03, z: 2.6 },                 // 排水溝旁
   logbook: { x: 39.15, y: 0.02, z: 3.6 },              // 電閘室前轉角地上

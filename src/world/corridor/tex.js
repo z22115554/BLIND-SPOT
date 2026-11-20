@@ -81,50 +81,58 @@ export function puddleMask(seed = 1, size = 256) {
   return canvasTexture(canvas, { wrap: false, color: false });
 }
 
-/** 防火門夾絲強化玻璃（RGBA）：淡綠玻璃（低 alpha）＋方格鐵絲網＋污痕、刮痕、一道細裂紋。 */
+/**
+ * 夾絲強化玻璃（RGBA）。玻璃本身幾乎透明（alpha ≈ 0.1、暗綠灰色調），
+ * 只有鐵絲網（25 mm 方格）、污痕、上緣煙燻與刮痕有覆蓋度——手電筒照上去只會照亮鐵絲與污垢，
+ * 不會變成一塊發亮的綠色磁磚；外面的車道、鈉燈與灰燼透得過來。
+ */
 export function wiredGlassTexture() {
   const W = 384, H = 496;
   const { canvas, g } = makeCanvas(W, H);
-  g.fillStyle = 'rgba(150,186,164,0.22)'; g.fillRect(0, 0, W, H);
-  // 邊緣積垢
+  g.fillStyle = 'rgba(30,40,36,0.10)'; g.fillRect(0, 0, W, H);
+  // 邊緣積垢（上緣煙燻較重）
   const eg = g.createLinearGradient(0, 0, 0, H);
-  eg.addColorStop(0, 'rgba(40,44,38,0.22)'); eg.addColorStop(0.12, 'rgba(40,44,38,0)');
-  eg.addColorStop(0.82, 'rgba(40,44,38,0)'); eg.addColorStop(1, 'rgba(46,42,32,0.36)');
+  eg.addColorStop(0, 'rgba(18,18,16,0.42)'); eg.addColorStop(0.1, 'rgba(18,18,16,0.06)');
+  eg.addColorStop(0.86, 'rgba(18,18,16,0)'); eg.addColorStop(1, 'rgba(26,24,18,0.38)');
   g.fillStyle = eg; g.fillRect(0, 0, W, H);
-  // 污痕／手印
+  for (const [x0, x1] of [[0, 14], [W - 14, W]]) {
+    const sg = g.createLinearGradient(x0, 0, x1, 0);
+    sg.addColorStop(x0 === 0 ? 0 : 1, 'rgba(18,18,16,0.32)'); sg.addColorStop(x0 === 0 ? 1 : 0, 'rgba(18,18,16,0)');
+    g.fillStyle = sg; g.fillRect(x0, 0, x1 - x0, H);
+  }
+  // 污痕／手印（很淡：在手電筒下只是一點灰霧）
   const r = rng(77);
   for (let i = 0; i < 26; i++) {
     const x = r() * W, y = H * (0.25 + r() * 0.7), rad = 8 + r() * 36;
     const gr = g.createRadialGradient(x, y, 0, x, y, rad);
-    gr.addColorStop(0, `rgba(120,118,104,${0.05 + r() * 0.1})`); gr.addColorStop(1, 'rgba(120,118,104,0)');
+    gr.addColorStop(0, `rgba(118,116,104,${0.03 + r() * 0.06})`); gr.addColorStop(1, 'rgba(118,116,104,0)');
     g.fillStyle = gr; g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
   }
-  // 煙燻（上緣較髒）
-  stain(g, W * 0.5, H * 0.05, W * 0.5, { seed: 78, color: [30, 30, 28], alpha: 0.16, blobs: 12 });
-  // 鐵絲網：25 mm 方格
+  stain(g, W * 0.5, H * 0.04, W * 0.5, { seed: 78, color: [22, 22, 20], alpha: 0.18, blobs: 12 });
+  // 鐵絲網：25 mm 方格（暗灰金屬，覆蓋度高）
   const step = W / 24.8;
-  g.lineWidth = 1.1;
+  g.lineWidth = 1.25;
   for (let x = step * 0.5; x < W; x += step) {
-    g.strokeStyle = `rgba(48,50,47,${0.52 + r() * 0.2})`;
+    g.strokeStyle = `rgba(52,54,50,${0.78 + r() * 0.16})`;
     g.beginPath(); g.moveTo(x + (r() - 0.5), 0); g.lineTo(x + (r() - 0.5) * 2, H); g.stroke();
   }
   for (let y = step * 0.5; y < H; y += step) {
-    g.strokeStyle = `rgba(48,50,47,${0.52 + r() * 0.2})`;
+    g.strokeStyle = `rgba(52,54,50,${0.78 + r() * 0.16})`;
     g.beginPath(); g.moveTo(0, y + (r() - 0.5)); g.lineTo(W, y + (r() - 0.5) * 2); g.stroke();
   }
   // 鐵絲點銹（暗褐，不要太飽和）
   for (let i = 0; i < 30; i++) {
     const x = Math.round(r() * 24) * step + step * 0.5, y = r() * H;
-    g.fillStyle = `rgba(84,58,40,${0.25 + r() * 0.3})`; g.fillRect(x - 1, y - 2, 2, 3 + r() * 5);
+    g.fillStyle = `rgba(84,58,40,${0.45 + r() * 0.3})`; g.fillRect(x - 1, y - 2, 2, 3 + r() * 5);
   }
   // 刮痕
-  g.strokeStyle = 'rgba(230,236,226,0.18)'; g.lineWidth = 0.8;
+  g.strokeStyle = 'rgba(200,206,196,0.12)'; g.lineWidth = 0.8;
   for (let i = 0; i < 14; i++) {
     const x = r() * W, y = r() * H, a = (r() - 0.5) * 0.8, l = 10 + r() * 60;
     g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); g.stroke();
   }
   // 一道細裂紋（左上角）
-  g.strokeStyle = 'rgba(235,245,238,0.42)'; g.lineWidth = 1.1;
+  g.strokeStyle = 'rgba(214,224,216,0.32)'; g.lineWidth = 1.1;
   g.beginPath(); let cx = 6, cy = H * 0.08; g.moveTo(cx, cy);
   for (let i = 0; i < 9; i++) { cx += 9 + r() * 14; cy += (r() - 0.3) * 14; g.lineTo(cx, cy); }
   g.stroke();

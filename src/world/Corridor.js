@@ -6,17 +6,22 @@
 // 氛圍要求：狹長、低矮、濃霧（場景 FogExp2 由狀態設定，約 0.10–0.14）、潮濕混凝土、管線、排水溝、
 //   失效的緊急出口燈、牆面區段編號（例如「B2-07」）。停電時廊道沒有任何燈；只能靠手電筒。
 // 防火門幻影（triggerHeadlights）：
-//   主車道上一道車燈由遠而近掃過（SpotLight 由 ROADWAY.laneZ 車道、低角度射向防火門玻璃），
-//   透過玻璃把玩家的影子（ctx.player.shadowProxy）拉長投射在廊道南牆上。
-//   亮度變化必須是 0.6 秒以上的漸強與 1 秒以上的漸弱（「一閃而過」但不是頻閃），整段約 2.5–3 秒，
+//   主車道上一道車燈緩慢掃過（SpotLight 由車道低角度射向防火門玻璃），
+//   透過玻璃把玩家的影子（剪影投影體，見 corridor/silhouette.js）拉長投射在廊道南牆上。
+//   亮度變化必須是 0.6 秒以上的漸強與 1 秒以上的漸弱（「一閃而過」但不是頻閃），
 //   同時播放 audio.sfx('carPass')。結束後主車道上只有緩慢飄落的灰燼。
-//
+//   【修正後的編排】玩家向東走、在防火門前約 1.6 m 觸發：一輛看不見的車在煙裡倒車緩行（往西，車頭朝東），
+//   車燈穿過玻璃，在玩家右前方的南牆上投出一塊柔邊的窗形光斑，光斑順著玩家行進方向往東滑；
+//   依觸發時的位置與速度預測，玩家走過門後約 1.3 m 時恰好站進光束裡 → 自己被拉長的頭肩剪影落在光斑中，
+//   持續約 1 秒，之後光斑淡出。左右邊緣很柔：牆上任一點由 10% 到 90% 亮度 ≥ 0.5 秒。
+//   事件期間手電筒暫時調暗（player.setFlashlightDim，若存在），淡出時再慢慢回來，整體畫面亮度幾乎不變。
 // 實作摘要：
 //   * 靜態幾何依「材質 × 8 m 區段」合併（corridor/structure.js、switchRoom.js、roadway.js），
 //     貼圖 UV 以世界座標公尺為單位，由材質 repeat 決定尺度（對齊 TextureFactory 的尺度說明）。
 //   * 燈光：廊道＋電閘室共 5 盞 PointLight（有距離截止，不會漏進主控室），其餘靠燈罩自發光。
-//     車燈 2 盞 SpotLight 常駐場景（強度 0 時著色器會跳過，不必重新編譯）；近側那盞 castShadow，
-//     但 shadow.autoUpdate 只在事件期間開啟，平時不渲染陰影貼圖。
+//     車燈 2 盞 SpotLight 常駐場景（燈數固定，不必重新編譯）；近側那盞 castShadow＋光斑遮罩（map），
+//     shadow.autoUpdate 只在事件期間開啟，平時不渲染陰影貼圖。這盞燈的陰影貼圖只收廊道牆體、管線與
+//     玩家剪影（門扇、封板等不擋它：光斑形狀由遮罩決定，邊緣才能夠柔）。
 //   * 線索物件（watch/logbook/coat）在標準朝向下建模、置中，世界擺放由外層 mount 負責。
 // =============================================================================
 import * as THREE from 'three';
@@ -26,16 +31,21 @@ import { buildSwitchRoom, LEVER_OFF, LEVER_ON } from './corridor/switchRoom.js';
 import { roadwayDims, buildRoadway, buildWindowFx } from './corridor/roadway.js';
 import { particleMaterial } from './corridor/fx.js';
 import * as TX from './corridor/tex.js';
+import { buildSilhouette, filterShadowPass } from './corridor/silhouette.js';
 
 const PI = Math.PI;
 const HL_Y = 0.75;                 // 車燈離地高度（主車道路面 y = 0）
-const HL_RISE = 1.3, HL_FALL = 1.3;
 const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
 const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a)); return t * t * (3 - 2 * t); };
 const bell = (k, c, w) => Math.exp(-((k - c) * (k - c)) / (2 * w * w));
 const dampTo = (cur, target, lambda, dt) => cur + (target - cur) * (1 - Math.exp(-lambda * dt));
+// ∫₀ᵗ smoothstep(a, b, s) ds（解析式）
+const smoothInt = (a, b, t) => { if (t <= a) return 0; const w = b - a; if (t >= b) return w / 2 + (t - b); const x = (t - a) / w; return w * (x * x * x - x * x * x * x / 2); };
+/** 車燈事件中車子已行駛的「等效秒數」：速度曲線 = smoothstep(a0,a1) − bk·smoothstep(b0,b1)（先加速、後略減速）。 */
+const carTravel = (p, t) => smoothInt(p.a0, p.a1, t) - p.bk * smoothInt(p.b0, p.b1, t);
 
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _q = new THREE.Quaternion();
+const _c1 = new THREE.Vector3(), _c2 = new THREE.Vector3(), _c3 = new THREE.Vector3(), _c4 = new THREE.Vector3();
 const _up = new THREE.Vector3(0, 1, 0);
 
 /** 可調參數（整合時微調用）。 */
@@ -43,9 +53,18 @@ export const CORRIDOR_TUNING = {
   fixtureEmissive: 1.7,       // 廊道燈罩自發光強度
   switchEmissive: 2.3,        // 電閘室燈罩自發光強度
   pointBase: [9, 9, 8, 6, 10],// 5 盞 PointLight 的燭光
-  headlightPeak: 1300,        // 近側車燈（穿窗、投影）峰值燭光（以 8 m 處為準，會依距離正規化）
-  headlightRoad: 420,         // 遠側車燈（只照車道）峰值燭光
-  headlightDuration: 2.9,
+  headlightPeak: 760,         // 近側車燈（穿窗、投影）峰值燭光（以「車燈 → 牆上光斑」12 m 為準，依距離正規化）
+  headlightRoad: 420,         // 另一盞車燈（只作用在灰燼粒子與反光標記上，不是真實光源）
+  headlightRise: 1.7,         // 漸強（秒）；光敏感模式 ×1.3
+  headlightHold: 0.4,         // 玩家站進光束後再持續多久才開始漸弱（秒）
+  headlightFall: 2.0,         // 漸弱（秒）
+  headlightSpeed: [2.0, 3.4], // 車速範圍（m/s）：在煙裡緩行。光斑在牆上的滑速 ≈ 0.3 × 車速，與玩家同向
+  headlightRiseTime: 0.9,     // 設計值：牆上任一點由 10% 到 90% 亮度的時間（秒）→ 決定光斑左右邊緣的柔度（實測 ≥ 0.5）
+  headlightSoftMin: 0.5,      // 左右邊緣過渡寬度（m）下限
+  headlightSoftV: 0.07,       // 上下邊緣的過渡寬度（m）：光斑幾乎只水平滑動，上下可以利落一點（更像窗框）
+  headlightLaneZ: -4.4,       // 近側車燈所在的 z（車道上）
+  headlightAlignX: 21.3,      // 預測玩家在這個 x 時站進光束（防火門 x = 20）
+  flashlightDim: 0.3,         // 事件期間手電筒亮度倍率（需要 player.setFlashlightDim）
 };
 
 export class Corridor {
@@ -74,6 +93,9 @@ export class Corridor {
     this.road = buildRoadway(ctx, this.roadGroup, this.mats, this.rdDims);
     for (const l of this.road.hl) { this.lightRig.add(l); this.lightRig.add(l.target); }
     this.windowFx = buildWindowFx(this.world, this.struct.glass);
+    // 車燈事件的玩家剪影（只投影在 hl[0] 的陰影貼圖中）
+    this.silhouette = buildSilhouette(ctx.LAYOUT.EYE.standing);
+    this.world.add(this.silhouette);
 
     // ---- 線索物件 -----------------------------------------------------------
     const watch = buildWatch(ctx);
@@ -194,7 +216,7 @@ export class Corridor {
     this._powerLevel = 0;
 
     // ---- 狀態 ---------------------------------------------------------------
-    this._hl = { run: 0, active: false, env: 0 };
+    this._hl = { run: 0, active: false, env: 0, dimmed: false, plan: null };
     this._ash = { target: 1, level: 1 };
     this._leds = { trip: 1, power: 0, tripT: 1, powerT: 0 };
     this._breakerOn = false;
@@ -205,7 +227,17 @@ export class Corridor {
     if (ctx.debug) console.info(`[corridor] built in ${Math.round(performance.now() - tBuild)} ms`);
   }
 
-  init() {}
+  init() {
+    // 車燈 hl[0] 的陰影貼圖：只收管線與玩家剪影。北牆、門扇、門框、封板、道具等都不擋它——
+    // 光斑形狀與柔邊完全由光斑遮罩決定（若讓北牆的門洞參與，光斑的邊緣會被門框切出硬邊）。
+    // PlayerController 的膠囊也不擋它（改用更像人的剪影）。其他光源的陰影完全不受影響。
+    const hlCam = () => this.road.hl[0].shadow.camera;
+    const castsHL = (o) => o === this.silhouette || /^pipe:/.test(o.name || '');
+    this.group.traverse((o) => { if (o.isMesh && o.castShadow && !castsHL(o)) filterShadowPass(o, hlCam, 'skip'); });
+    filterShadowPass(this.silhouette, hlCam, 'only');
+    const proxy = this.ctx.player?.shadowProxy;
+    if (proxy && proxy.isMesh) filterShadowPass(proxy, hlCam, 'skip');
+  }
 
   // ===========================================================================
   // 材質
@@ -304,22 +336,57 @@ export class Corridor {
 
   /** 防火門外的車燈幻影（見檔頭）。只會在每次呼叫時播放一次。@returns {Promise<void>} */
   triggerHeadlights() {
-    const ctx = this.ctx, C = ctx.LAYOUT.CORRIDOR, fd = C.fireDoor;
+    const ctx = this.ctx, C = ctx.LAYOUT.CORRIDOR, fd = C.fireDoor, TU = CORRIDOR_TUNING;
     const run = ++this._hl.run;
-    const D = CORRIDOR_TUNING.headlightDuration;
-    // 讓光線在亮度最高時恰好穿過玻璃、掠過玩家（以觸發時的位置與行進預測）
-    const p = ctx.player?.position;
-    const pz = clamp(p?.z ?? 2.0, C.main.minZ + 0.3, C.main.maxZ - 0.15);
-    const moving = ctx.player?.isMoving ? 1 : 0;
-    const tAlign = 1.45;                               // 亮度持平段（1.3–1.6 秒）的中央
-    const xp = Math.min(fd.x + 0.4, (p?.x ?? fd.x - 3) + moving * 1.3 * tAlign);
-    const zl = this.rdDims.laneZ + 0.7;
-    const xAlign = clamp(fd.x + (fd.x - xp) * ((fd.z - zl) / Math.max(0.3, pz - fd.z)), fd.x + 1, fd.x + 16);
-    const plan = { run, D, tAlign, xAlign, v: 11.0, zl, zr: this.rdDims.laneZ - 0.7 };
+    const reduce = !!ctx.settings?.get?.('reduceFlicker');
+    const slow = reduce ? 1.3 : 1;                         // 光敏感模式：更慢、更暗
+    const rise = TU.headlightRise * slow, fall = TU.headlightFall * slow;
+    const zg = this.struct.glass.position.z;              // 玻璃平面
+    const zl = TU.headlightLaneZ, zr = zl - 1.45;         // 兩盞車燈（左右燈相距 1.45 m）
+    const dzCW = zg - zl;
+    // ---- 依玩家觸發時的位置與速度，預測「站進光束」的時刻 tA，反推車子位置 ----
+    // 車子往西（倒車）緩行，光斑在南牆上往東滑（與玩家同向），玩家的影子在光斑裡停留得最久。
+    const P = ctx.player, p = P?.position, vel = P?.velocity;
+    const px = p?.x ?? fd.x - 1.5;
+    const pz = clamp(p?.z ?? 2.0, C.main.minZ + 0.25, C.main.maxZ - 0.25);
+    const vx = clamp(vel?.x ?? 0, -2.5, 2.5), vz = clamp(vel?.z ?? 0, -2, 2);
+    let tA = rise + 0.3;
+    if (vx > 0.35) tA = clamp((TU.headlightAlignX - px) / vx, rise - 0.2, rise + 1.0);
+    const xpA = px + Math.max(0, vx) * tA;
+    const pzA = clamp(pz + vz * Math.min(tA, 1) * 0.5, C.main.minZ + 0.3, C.main.maxZ - 0.3);
+    // 光線與窗戶法線的水平夾角：預測位置在門的東側 → 對準玩家；否則用 50°（光斑落在玩家前方的南牆上）
+    let tanT = xpA > fd.x + 0.3 ? (xpA - fd.x) / Math.max(0.3, pzA - zg) : Math.tan(50 * PI / 180);
+    tanT = clamp(tanT, 0.35, 2.4);
+    const xcA = fd.x - tanT * dzCW;                        // tA 時車燈的 x
+    const xcMax = fd.x - 0.6;                              // 起點一定在窗戶西側（車頭朝東，車燈才照得進來）
+    // 車速曲線：光斑先在原地慢慢亮起，亮到一半車子才開始緩緩移動；漸弱時車子也慢下來。
+    // （牆上的點因此不會同時遇到「亮度包絡上升」與「光斑邊緣掃過」兩種變化而亮得太快）
+    const tF = Math.max(rise, tA) + TU.headlightHold;     // 漸弱開始
+    const D = tF + fall;
+    // 漸弱時車子只略為減速：光斑仍跟著玩家往前滑，在視野裡淡出（而不是被玩家甩到畫面外）
+    const prof = { a0: 0.45 * rise, a1: rise + 0.35, b0: tF, b1: tF + fall, bk: 0.35 };
+    const GA = carTravel(prof, tA);
+    const [vMin, vMax] = TU.headlightSpeed;
+    const v = clamp((xcMax - xcA) / Math.max(0.05, GA), vMin, vMax) / Math.sqrt(slow);
+    const xc0 = Math.min(xcMax, xcA + v * GA);
+    // 光斑在牆上的滑速 → 左右柔邊寬度（牆上任一點 10→90% 的時間 = headlightRiseTime）
+    const u = v * (C.main.maxZ - zg) / dzCW;
+    const soft = Math.max(TU.headlightSoftMin, u * TU.headlightRiseTime * slow);
+    const plan = {
+      run, D, rise, fall, tF, v, xc0, zl, zr, zg, tA, reduce, prof,
+      I: TU.headlightPeak * (reduce ? 0.62 : 1),
+      soft, softV: TU.headlightSoftV,
+      restored: false,
+    };
     this._hl.plan = plan; this._hl.active = true;
     const hl0 = this.road.hl[0];
     hl0.shadow.autoUpdate = true;
+    this.silhouette.visible = true;
+    this._syncSilhouette();
+    // 手電筒暫時調暗（PlayerController.setFlashlightDim；不存在就略過），讓光斑讀得出來
+    try { if (ctx.player?.setFlashlightDim) { ctx.player.setFlashlightDim(TU.flashlightDim, rise * 0.85); this._hl.dimmed = true; } } catch (e) { console.warn('[corridor] setFlashlightDim failed', e); }
     try { ctx.audio?.sfx?.('carPass', { position: new THREE.Vector3(fd.x, fd.glass.y, fd.z) }); } catch (e) { console.warn('[corridor] carPass sfx failed', e); }
+    if (ctx.debug) console.info('[corridor] headlights', JSON.stringify({ px: +px.toFixed(2), pz: +pz.toFixed(2), vx: +vx.toFixed(2), tA: +tA.toFixed(2), xpA: +xpA.toFixed(2), xcA: +xcA.toFixed(2), xc0: +xc0.toFixed(2), v: +v.toFixed(2), soft: +soft.toFixed(2), D: +D.toFixed(2) }));
     return ctx.clock.tween(D, (e, k) => { if (this._hl.run === run) this._hlFrame(k * D, plan); }, 'linear')
       .then(() => { if (this._hl.run === run) this._hlEnd(); });
   }
@@ -383,7 +450,8 @@ export class Corridor {
     const inCorridor = smooth(4.1, 4.7, camPos.x);
     // 區域可見性（純繪製最佳化）
     this.swGroup.visible = camPos.x > 33.5;
-    this.roadGroup.visible = (camPos.x > 5.5 && camPos.x < 34.5) || camPos.z < ctx.LAYOUT.CORRIDOR.main.minZ;
+    // 主車道只從防火門玻璃看得到：只有相機在廊道裡（x 5.5–34.5）才繪製（主控室裡完全不畫）
+    this.roadGroup.visible = (camPos.x > 5.5 && camPos.x < 34.5) || (camPos.z < ctx.LAYOUT.CORRIDOR.main.minZ && camPos.x > ctx.LAYOUT.CORRIDOR.main.minX);
 
     // 粒子共用 uniform
     ctx.renderer.getDrawingBufferSize(this._bufSize);
@@ -451,8 +519,8 @@ export class Corridor {
       g.pivot.rotation.z = this._needleAngle(g.value);
     }
 
-    // 車燈事件期間：陰影貼圖每幀更新
-    if (this._hl.active) this.road.hl[0].shadow.needsUpdate = true;
+    // 車燈事件期間：剪影跟著玩家（本模組在 player 之後更新），陰影貼圖每幀更新
+    if (this._hl.active) { this._syncSilhouette(); this.road.hl[0].shadow.needsUpdate = true; }
   }
 
   /** 儀表指針角度：0 → 左下（-135°），1 → 右下（+135°）。 */
@@ -511,67 +579,146 @@ export class Corridor {
     for (const cm of this.struct.cathodes) cm.opacity = 0.32 * maxLevel;
     // 積水只有在燈亮時才映出天花板與燈管（停電時只剩手電筒的高光）
     for (const wm of this.struct.wetMats) wm.envMapIntensity = 2.6 * maxLevel;
+    if (this.struct.glassSheen) this.struct.glassSheen.material.envMapIntensity = 0.3 * maxLevel;
   }
 
   // ---- 車燈事件 --------------------------------------------------------------
+  /** 玩家剪影跟著玩家（腳底位置＋面向）。 */
+  _syncSilhouette() {
+    const P = this.ctx.player, sil = this.silhouette;
+    if (!P) return;
+    sil.position.set(P.position.x + (P.rig?.x || 0), 0, P.position.z + (P.rig?.z || 0));
+    sil.rotation.set(0, P.yaw || 0, 0);
+    sil.updateMatrixWorld();
+  }
+
+  /**
+   * 光斑遮罩：直接在「南牆座標」定義一個柔邊矩形（中心 X/Y、半寬 W、半高 H、左右/上下過渡半寬 A/B），
+   * 逐一把遮罩貼圖的每個像素（光源視角的 tan 空間 [-R, R]²）投到牆面上求值。
+   * 斜射時牆上兩側的拉伸不同（遠端被拉得更長），在牆面座標定義才能讓兩側邊緣都一樣柔。
+   * @returns {number} 涵蓋整個光斑所需的 tan 半徑 R（光錐半角 = atan(R)）
+   */
+  _drawCookie(L, Wt, zWall, X, Y, W, H, A, B, reduce) {
+    const { tex, data, N } = this.road.hlCookie;
+    // 光源相機的基底（與 SpotLightShadow 的 lookAt 一致：up = +Y）
+    const f = _c1.copy(Wt).sub(L).normalize();
+    const r = _c2.crossVectors(f, _up).normalize();
+    const u = _c3.crossVectors(r, f).normalize();
+    // 需要的 tan 半徑：柔邊矩形四角投影回 tan 空間
+    let R = 0;
+    for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+      _c4.set(X + sx * (W + A * 1.5), Y + sy * (H + B), zWall).sub(L);
+      const dz = _c4.dot(f);
+      if (dz > 1e-3) R = Math.max(R, Math.hypot(_c4.dot(r) / dz, _c4.dot(u) / dz));
+    }
+    R = Math.max(1e-3, R * 1.06);                          // 光錐（圓）要包住整個柔邊矩形
+    const span = W + A;
+    for (let j = 0; j < N; j++) {
+      const ty = ((j + 0.5) / N * 2 - 1) * R;
+      for (let i = 0; i < N; i++) {
+        const tx = ((i + 0.5) / N * 2 - 1) * R;
+        const dx = f.x + r.x * tx + u.x * ty, dy = f.y + r.y * tx + u.y * ty, dz = f.z + r.z * tx + u.z * ty;
+        let v = 0;
+        if (dz > 1e-4) {
+          const s = (zWall - L.z) / dz;
+          const sx = L.x + dx * s - X, ox = Math.abs(sx), oy = Math.abs(L.y + dy * s - Y);
+          // 光斑往東滑：後緣（西側）再柔一些——車子起步時，後緣掃過的牆面不會暗得太快
+          const As = sx < 0 ? A * 1.5 : A;
+          const ex = 1 - smooth(W - As, W + As, ox), ey = 1 - smooth(H - B, H + B, oy);
+          // 中央略亮（車燈熱點）；光敏感模式下均勻
+          const hot = reduce ? 1 : 0.84 + 0.16 * Math.exp(-(ox * ox) / (2 * (0.55 * span) ** 2));
+          v = ex * ey * hot;
+        }
+        const o = (j * N + i) * 4, b = Math.round(255 * v);
+        data[o] = b; data[o + 1] = b; data[o + 2] = b; data[o + 3] = 255;
+      }
+    }
+    tex.needsUpdate = true;
+    return R;
+  }
+
   _hlFrame(t, plan) {
-    const ctx = this.ctx, fd = ctx.LAYOUT.CORRIDOR.fireDoor, R = this.road;
+    const ctx = this.ctx, C = ctx.LAYOUT.CORRIDOR, fd = C.fireDoor, R = this.road;
     const D = plan.D;
-    const xc = plan.xAlign + plan.v * (t - plan.tAlign);
-    const env = smooth(0, HL_RISE, t) * (1 - smooth(D - HL_FALL, D, t));     // 1.3 秒漸強、1.3 秒漸弱（0.25 秒內變化 < 30%）
-    const win = _v1.set(fd.x, fd.glass.y, fd.z - 0.07);
+    const xc = plan.xc0 - plan.v * carTravel(plan.prof, t);
+    // 亮度包絡：慢慢漸強、慢慢漸弱
+    const env = smooth(0, plan.rise, t) * (1 - smooth(plan.tF, D, t));
+    // 淡出前一刻就讓手電筒慢慢回來（與光斑的淡出互補，整體畫面亮度幾乎不變）
+    if (!plan.restored && t >= plan.tF - 0.3) {
+      plan.restored = true;
+      try { if (this._hl.dimmed) { ctx.player?.setFlashlightDim?.(1, plan.fall + 0.3); this._hl.dimmed = false; } } catch (e) { console.warn('[corridor] setFlashlightDim failed', e); }
+    }
+    const win = _v1.set(fd.x, fd.glass.y, plan.zg);
     const p0 = _v2.set(xc, HL_Y, plan.zl);
     const toWin = _v3.copy(win).sub(p0); const dW = toWin.length(); toWin.divideScalar(dW);
-    const facing = smooth(-0.45, 0.65, toWin.x);                 // 車頭朝 +X：車子過了窗戶之後光就背對我們
-    const fwd = 0.62 + 0.38 * facing;
-    // 以「到窗戶的距離」正規化：不論車子在哪，穿窗光斑的亮度都差不多（遠處光束中心本來就比較亮）
-    const norm = clamp((dW / 8) * (dW / 8), 0.6, 4.5);
-    const I0 = CORRIDOR_TUNING.headlightPeak * env * fwd * norm;
-    const I1 = CORRIDOR_TUNING.headlightRoad * env;
-    const [h0, h1] = R.hl;
-    h0.position.copy(p0); h0.target.position.copy(win).addScaledVector(toWin, 1.6);
+    // 車頭朝 +X：窗戶越接近車燈主軸越亮（車子貼近窗前時，窗戶在車燈側面 → 暗）
+    const facing = smooth(-0.45, 0.65, toWin.x);
+    const fwd = 0.45 + 0.55 * smooth(0.12, 0.62, toWin.x);
+    // 光線打到南牆的位置（光斑中心）與距離；窗戶在牆上的投影（放大率 m）
+    const zWall = C.main.maxZ;
+    const sWall = (zWall - p0.z) / Math.max(0.05, toWin.z);
+    const m = (zWall - p0.z) / Math.max(0.05, plan.zg - p0.z);
+    const X = p0.x + toWin.x * sWall, Y = p0.y + toWin.y * sWall;
+    // 牆上的柔邊矩形：窗戶投影（0.62 × 0.8 × m）；核心至少要比柔邊寬一些（否則兩側柔邊重疊成尖峰，牆上的點會亮得太快）
+    const A = plan.soft / 1.22;                            // smoothstep 的 10–90% 約佔全寬的 0.61
+    const Wc = Math.max((fd.glass.w / 2) * m, 0.55 * A);
+    const Hc = (fd.glass.h / 2) * m;
+    const Bv = plan.softV / 1.22;
+    const Rt = this._drawCookie(p0, win, zWall, X, Y, Wc, Hc, A, Bv, plan.reduce);
+    const I0 = plan.I * env * fwd * (sWall / 12) * (sWall / 12);
+    const I1 = CORRIDOR_TUNING.headlightRoad * env * (plan.reduce ? 0.7 : 1);   // 另一盞車燈（只作用在灰燼／反光標記上）
+    const h0 = R.hl[0];
+    const p1 = _c4.set(xc, HL_Y, plan.zr);
+    h0.position.copy(p0); h0.target.position.copy(win);
+    h0.angle = Math.atan(Rt);
     h0.intensity = I0;
-    h1.position.set(xc, HL_Y, plan.zr); h1.target.position.set(xc + 9, 0.0, plan.zr + 1.2);
-    h1.intensity = I1;
-    h0.target.updateMatrixWorld(); h1.target.updateMatrixWorld();
-    // 車燈本身的眩光（只有透過玻璃看得到）
-    const spriteVis = env * (0.3 + 0.7 * facing);
+    h0.target.updateMatrixWorld();
+    this._syncSilhouette();
+    // 車燈本身的眩光（只有透過玻璃看得到）；車子退到封板附近時淡出
+    const spriteVis = env * (0.3 + 0.7 * facing) * smooth(6.2, 8.0, xc);
     R.hlSprites[0].position.set(xc + 0.25, HL_Y, plan.zl); R.hlSprites[1].position.set(xc + 0.25, HL_Y, plan.zr);
     for (const s of R.hlSprites) { s.material.opacity = 0.95 * spriteVis; s.scale.setScalar(1.2 + 0.6 * facing); }
     // 玻璃上的散射光＋穿窗光束
-    this.windowFx.scatterMat.opacity = 0.7 * env * fwd;
+    this.windowFx.scatterMat.opacity = 0.55 * env * fwd;
     const beam = this.windowFx.beam;
     beam.visible = env > 0.01;
     if (beam.visible) {
-      const zS = ctx.LAYOUT.CORRIDOR.main.maxZ;
-      const len = clamp((zS - fd.z) / Math.max(0.15, toWin.z), 1.4, 5.5);
-      beam.position.set(fd.x, fd.glass.y, fd.z - 0.06);
+      const len = clamp(sWall - dW, 1.2, 6.0);
+      beam.position.set(fd.x, fd.glass.y, plan.zg + 0.01);
       _q.setFromUnitVectors(_up, toWin); beam.quaternion.copy(_q);
-      beam.scale.set(1, len, 1);
-      this.windowFx.beamMat.uniforms.uI.value = 0.15 * env * fwd;
+      const wid = clamp((2 * (Wc + A * 0.6) / m) * Math.max(0.35, toWin.z / Math.max(1e-4, Math.hypot(toWin.x, toWin.z))) / 0.95, 0.35, 1.2);
+      beam.scale.set(wid, len, wid);
+      this.windowFx.beamMat.uniforms.uI.value = 0.13 * env * fwd * (plan.reduce ? 0.7 : 1);
     }
     // 粒子與反光標記也接收車燈
     const hlScaleAsh = 1 / 60;
-    for (const u of [R.ash.material.uniforms]) {
-      u.uHL0.value.copy(h0.position); u.uHL1.value.copy(h1.position);
+    {
+      const u = R.ash.material.uniforms;
+      u.uHL0.value.copy(h0.position); u.uHL1.value.copy(p1);
       u.uHLDir0.value.copy(toWin); u.uHLDir1.value.set(1, -0.1, 0.1).normalize();
-      u.uHLI0.value = I0 * hlScaleAsh; u.uHLI1.value = I1 * hlScaleAsh;
+      u.uHLI0.value = Math.min(I0, 2600) * hlScaleAsh; u.uHLI1.value = I1 * hlScaleAsh;
     }
     const ru = R.reflectors.uniforms;
-    ru.uHL0.value.copy(h0.position); ru.uHL1.value.copy(h1.position);
+    ru.uHL0.value.copy(h0.position); ru.uHL1.value.copy(p1);
     ru.uHLI0.value = env * 9; ru.uHLI1.value = env * 9;
     this._hl.env = env;
+    this._hl.xc = xc;
   }
 
   _hlEnd() {
     const R = this.road;
-    for (const l of R.hl) { l.intensity = 0; l.position.set(0, -50, this.rdDims.laneZ); }
+    { const l = R.hl[0]; l.intensity = 0; l.position.set(0, -50, this.rdDims.laneZ); }
     for (const s of R.hlSprites) s.material.opacity = 0;
     this.windowFx.scatterMat.opacity = 0;
     this.windowFx.beam.visible = false;
     const u = R.ash.material.uniforms; u.uHLI0.value = 0; u.uHLI1.value = 0;
     R.reflectors.uniforms.uHLI0.value = 0; R.reflectors.uniforms.uHLI1.value = 0;
     R.hl[0].shadow.autoUpdate = false; R.hl[0].shadow.needsUpdate = true;
+    this.silhouette.visible = false;
+    if (this._hl.dimmed) {
+      this._hl.dimmed = false;
+      try { this.ctx.player?.setFlashlightDim?.(1, 1.5); } catch (e) { console.warn('[corridor] setFlashlightDim failed', e); }
+    }
     this._hl.active = false; this._hl.env = 0;
   }
 }

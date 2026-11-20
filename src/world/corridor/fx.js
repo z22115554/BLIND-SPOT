@@ -67,6 +67,7 @@ const PARTICLE_FRAG = /* glsl */`
 uniform sampler2D map;
 uniform float uOpacity;
 uniform float uUseMap;
+uniform float uFogMax;          // 霧化上限（灰燼：玻璃外 1–7 m 的灰燼不能被走廊的濃霧完全吃掉）
 varying vec3 vColor;
 varying float vAlpha;
 varying float vSpin;
@@ -90,11 +91,18 @@ void main() {
   gl_FragColor = vec4(vColor * tint, a);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
-  #include <fog_fragment>
+  #ifdef USE_FOG
+    #ifdef FOG_EXP2
+      float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
+    #else
+      float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
+    #endif
+    gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, min( fogFactor, uFogMax ) );
+  #endif
 }`;
 
 /** 粒子材質（灰燼 / 浮塵共用）。 */
-export function particleMaterial({ map = null, follow = false, size = 0.03, ambient = 0x000000, fall = 1, opacity = 1, blending = THREE.NormalBlending } = {}) {
+export function particleMaterial({ map = null, follow = false, size = 0.03, ambient = 0x000000, fall = 1, opacity = 1, blending = THREE.NormalBlending, fogMax = 1 } = {}) {
   const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
     uTime: { value: 0 }, uScale: { value: 400 }, uSize: { value: size },
     uBoxMin: { value: new THREE.Vector3() }, uBoxSize: { value: new THREE.Vector3(1, 1, 1) },
@@ -105,7 +113,7 @@ export function particleMaterial({ map = null, follow = false, size = 0.03, ambi
     uHLI0: { value: 0 }, uHLI1: { value: 0 },
     uSodiumPos: { value: new THREE.Vector3() }, uSodium: { value: 0 },
     uAmbient: { value: new THREE.Color(ambient) }, uFall: { value: fall },
-    uOpacity: { value: opacity }, uUseMap: { value: map ? 1 : 0 }, map: { value: map },
+    uOpacity: { value: opacity }, uUseMap: { value: map ? 1 : 0 }, map: { value: map }, uFogMax: { value: fogMax },
   }]);
   uniforms.map.value = map;
   const m = new THREE.ShaderMaterial({

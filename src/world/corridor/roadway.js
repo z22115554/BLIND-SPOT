@@ -66,9 +66,9 @@ export function buildRoadway(ctx, root, mats, d) {
     }, 8, 22, { uvFn: (u, v) => [(x0 + (x1 - x0) * u) / 1.2, v * 12 / 1.2], flip: true });
     B.add(mats.arch, g, { cast: false });
   }
-  // 兩端黑色封板（避免從玻璃斜看到盡頭的空洞）
-  B.add(mats.black, box(x0 - 0.05, x0, 0, d.crown, zN, zS, { faces: 'px' }), { cast: true });
-  B.add(mats.black, box(x1, x1 + 0.05, 0, d.crown, zN, zS, { faces: 'nx' }), { cast: true });
+  // 兩端黑色封板（避免從玻璃斜看到盡頭的空洞）。不投影：車燈的光形由遮罩決定，封板不能把車燈擋掉。
+  B.add(mats.black, box(x0 - 0.05, x0, 0, d.crown, zN, zS, { faces: 'px' }), { cast: false });
+  B.add(mats.black, box(x1, x1 + 0.05, 0, d.crown, zN, zS, { faces: 'nx' }), { cast: false });
   // 牆頂隧道燈具（一整排都壞了，只有一盞遠處的鈉燈還亮著）
   for (let x = x0 + 1.5; x < x1; x += 4) {
     B.add(mats.lampHousing, boxC(x, d.wallTop + 0.75, zN + 0.18, 1.0, 0.16, 0.22), { cast: false });
@@ -93,7 +93,7 @@ export function buildRoadway(ctx, root, mats, d) {
   // 緊急電話箱（北牆）
   B.add(mats.lampHousing, boxC(17.5, 1.3, zN + 0.06, 0.6, 0.9, 0.12), { cast: false });
   B.add(mats.black, boxC(17.5, 1.3, zN + 0.121, 0.48, 0.74, 0.002), { cast: false });
-  B.build(root);   // 車道幾何不投影（只有兩端封板投影，擋住往隧道外的車燈）
+  B.build(root);   // 車道幾何都不投影
 
   // 反光標記：路面貓眼（沿兩條邊線與中線）＋北牆反光片
   {
@@ -148,9 +148,9 @@ export function buildRoadway(ctx, root, mats, d) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     g.setAttribute('aSeed', new THREE.BufferAttribute(seed, 4));
-    const mat = particleMaterial({ map: T.get('ash'), size: 0.032, ambient: 0x4a4846, fall: 1 });
+    const mat = particleMaterial({ map: T.get('ash'), size: 0.042, ambient: 0x6a6660, fall: 1, fogMax: 0.55 });
     mat.uniforms.uBoxMin.value.set(0, yMin, 0); mat.uniforms.uBoxSize.value.set(1, yMax - yMin, 1);
-    mat.uniforms.uSodiumPos.value.copy(d.sodium); mat.uniforms.uSodium.value = 0.5;
+    mat.uniforms.uSodiumPos.value.copy(d.sodium); mat.uniforms.uSodium.value = 2.4;
     const pts = new THREE.Points(g, mat);
     pts.name = 'ash'; pts.frustumCulled = false; pts.renderOrder = 1;
     root.add(pts);
@@ -158,21 +158,47 @@ export function buildRoadway(ctx, root, mats, d) {
   }
 
   // 幻影車燈：近側那盞投射陰影（只在事件期間更新陰影貼圖），遠側那盞只照亮車道
+  // 近側那盞帶一張「光斑遮罩」（SpotLight.map，每幀由 Corridor 依車子位置重繪）：
+  // 柔邊的窗形光斑——左右邊緣很寬、很柔（光斑在牆上滑動時，牆上任一點由暗到亮都要 ≥ 0.5 秒），
+  // 上下邊緣較利落。光斑形狀完全由遮罩決定，所以防火門門扇不參與這盞燈的陰影（見 Corridor 的陰影篩選）。
   {
+    const N = 64;
+    const data = new Uint8Array(N * N * 4);
+    const cookie = new THREE.DataTexture(data, N, N, THREE.RGBAFormat);
+    cookie.magFilter = THREE.LinearFilter; cookie.minFilter = THREE.LinearFilter; cookie.generateMipmaps = false;
+    cookie.wrapS = cookie.wrapT = THREE.ClampToEdgeWrapping;
+    cookie.needsUpdate = true;
+    cookie.name = 'headlightCookie';
+    out.hlCookie = { tex: cookie, data, N };
     const mk = (shadow) => {
-      const l = new THREE.SpotLight(0xffeedd, 0, shadow ? 27 : 6.2, 0.3, 0.5, 2);
+      const l = new THREE.SpotLight(0xffeedd, 0, shadow ? 30 : 6.2, 0.3, shadow ? 0 : 0.5, 2);
       l.position.set(0, -50, d.laneZ);
       l.castShadow = shadow;
       if (shadow) {
-        l.shadow.mapSize.set(1024, 1024);
-        l.shadow.camera.near = 2.5; l.shadow.camera.far = 27;
-        l.shadow.bias = -0.0009; l.shadow.normalBias = 0.025;
+        // 光錐很窄（只罩住窗戶＋柔邊），512² 已遠超所需
+        l.shadow.mapSize.set(512, 512);
+        l.shadow.camera.near = 1.0; l.shadow.camera.far = 30;
+        l.shadow.bias = -0.0006; l.shadow.normalBias = 0.02;
         l.shadow.autoUpdate = false; l.shadow.needsUpdate = true;
+        l.map = cookie;     // 從建構起就固定掛著（避免事件中途改變 shader 定義而重新編譯）
       }
       root.add(l); root.add(l.target);
       return l;
     };
     out.hl = [mk(true), mk(false)];
+    // hl[1]：不再當作第二盞車燈，而是常駐的「遠處鈉燈」——從北牆那盞還亮著的鈉燈往下照，
+    // 讓防火門玻璃外的車道（柏油、標線、路緣）在煙霧裡隱約可見。距離截止 12.2 m：照不到廊道（z ≥ 1.2）。
+    // （燈數不變：場景裡始終是這兩盞 SpotLight。）
+    {
+      const sl = out.hl[1], s = d.sodium;
+      sl.color.setRGB(1.0, 0.5, 0.17);
+      sl.position.set(s.x, d.wallTop + 0.55, zN + 0.6);
+      sl.target.position.set(s.x - 5.9, 0, zS - 3.4);
+      sl.angle = 0.7; sl.penumbra = 0.85; sl.distance = 12.2; sl.decay = 2;
+      sl.intensity = 330;
+      sl.name = 'roadSodium';
+      out.sodiumLight = sl;
+    }
     const glareTex = TX.glareTexture();
     out.hlSprites = out.hl.map(() => {
       const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: glareTex, color: 0xfff1dc, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, fog: true }));
