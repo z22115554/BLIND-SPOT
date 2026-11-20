@@ -537,7 +537,8 @@ export class Figure {
         if (this._phase > 4) {
           this._phase = 0; this._cycle++;
           this._fromKey = this._look ? HD_KEYS.look : HD_KEYS.rest;   // 下一輪從上一輪結束的姿勢開始（無跳格）
-          this._look = this._cycle % 3 === 2;                         // 每三輪有一次在停頓時抬頭望向鏡頭
+          // 停頓時抬頭望向鏡頭：剛開始（玩家第一次看到 HD 畫面的那十幾秒）隔一輪就抬一次頭，之後每三輪一次
+          this._look = this._cycle < 7 ? this._cycle % 2 === 1 : this._cycle % 3 === 2;
           this._pauseDur = this._look ? 0.95 + R() * 0.15 : 0.4 + R() * 0.65;
           durs[4] = this._pauseDur;
         }

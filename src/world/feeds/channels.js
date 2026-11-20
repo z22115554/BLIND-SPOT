@@ -282,7 +282,11 @@ export class Cam03 extends FeedChannel {
     super(3, { fov: 66, near: 0.05, far: 60 });
     const { halfW, h, end } = CORR;
     const camPos = [0.28, 2.52, -0.2];
-    this.aim(camPos, [0.02, 0.0, -6.3]);
+    // LD：望向廊道深處（人影一步步走近）。HD：同一台攝影機，但雲台壓低約 9°——
+    // 劈門的消防員（HD_SPOT，離門 1.55 m）整個上半身、面罩與斧頭揮動的弧線都落在畫面中央偏下、OSD 標籤列之上。
+    this._aimLD = [camPos, [0.02, 0.0, -6.3]];
+    this._aimHD = [camPos, [0.07, 0.0, -4.25]];
+    this.aim(...this._aimLD);
     this.figure = new Figure({ faceTarget: new THREE.Vector3(...camPos) });
     this.scene.add(this.figure.group);
     this._buildCorridor();
@@ -483,6 +487,7 @@ export class Cam03 extends FeedChannel {
   }
 
   onVariant(v) {
+    this.aim(...(v === 'HD' ? this._aimHD : this._aimLD));
     this.figure.setLook(v);
     this.farLampMat.color.copy(v === 'HD' ? C(0.25, 0.12, 0.05) : C(1.5, 1.35, 1.05));
   }
