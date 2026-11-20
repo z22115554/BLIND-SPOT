@@ -58,6 +58,7 @@ uniform vec3 uRoomMin;
 uniform vec3 uRoomMax;
 uniform vec3 uDoor;      // x：門洞 z0、y：門洞 z1、z：門洞高
 uniform vec2 uCrisp;     // 煙團輪廓的銳利度（alpha smoothstep 範圍）
+uniform float uOutK;     // 門外短廊的煙亮度（沒有火光時很暗；終幕火光時被映亮）
 varying vec2 vUv;
 varying vec2 vUv2;
 varying vec2 vQ;
@@ -86,8 +87,8 @@ void main() {
   float top = clamp( dot( n, upV ) * 0.55 + 0.5, 0.0, 1.0 );
   float self = mix( 1.0, 0.6, clamp( a1 * a2 * 1.5, 0.0, 1.0 ) );
   vec3 col = mix( uLitLow, uLitTop, top ) * vShade * self;
-  // 門外的短廊沒有光：還在門外的煙是暗的，進到房間才被室內光照亮
-  col *= mix( 0.18, 1.0, smoothstep( uRoomMin.x - 0.7, uRoomMin.x + 0.6, vWorld.x ) );
+  // 門外的短廊：沒有室內光（終幕時只有火光映照）；進到房間才被室內光照亮
+  col *= mix( uOutK, 1.0, smoothstep( uRoomMin.x - 0.7, uRoomMin.x + 0.6, vWorld.x ) );
   float f =1.0 - exp( -uFogDensity * uFogDensity * vDepth * vDepth );
   col = mix( col, uFogColor, min( f, uFogMax ) );
   gl_FragColor = vec4( col, a );
@@ -119,6 +120,7 @@ export class SmokeSystem {
       uRoomMax: { value: new THREE.Vector3(L.maxX, L.height, L.maxZ) },
       uDoor: { value: new THREE.Vector3(this.door.z0, this.door.z1, this.door.h) },
       uCrisp: { value: new THREE.Vector2(0.06, 0.8) },
+      uOutK: { value: 0.18 },
     };
     /** 可調外觀：生成率（個/秒）、初始/最終尺寸（m）、不透明度 */
     this.look = { rate: 5.2, size0: 0.55, size1: 1.8, op: 0.6 };
@@ -181,7 +183,7 @@ export class SmokeSystem {
     const level = o.level;
     const L = this.L;
     // 生成：門開著、濃煙還在增加時持續湧入
-    const flow = o.doorOpen > 0.01 && o.flowing ? clamp(level * 12) : 0;
+    const flow = o.doorOpen > 0.01 && o.flowing ? clamp(0.35 + level * 20) : 0;
     this._spawnAcc = Math.min(this._spawnAcc + dt * this.look.rate * flow, 3);
     const fadeK = clamp(level * 3);   // 煙散去時整體淡出
     const cam = o.camera;
@@ -248,6 +250,7 @@ export class SmokeSystem {
     U.uLitLow.value.copy(o.litLow);
     U.uFogColor.value.copy(o.fogColor);
     U.uFogDensity.value = o.fogDensity;
+    U.uOutK.value = o.outK ?? 0.18;
   }
 
   reset() {
