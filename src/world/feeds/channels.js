@@ -3,6 +3,7 @@
 //   shared：兩種佈置共用的建築（隧道殼體、廊道）
 //   ld / hd：只在該佈置顯示的物件與燈光
 // 所有 HD 火光只做緩慢起伏（≤ 15%、週期 ≥ 0.6 秒），沒有任何快速閃爍。
+// LD 微事件階段（ch.stage / maxStage / meanScale / setStage(k)）在 anomalies.js 建立（docs/pacing/spec.md §6–7）。
 // =============================================================================
 import * as THREE from 'three';
 import * as TX from './feedTextures.js';
@@ -11,6 +12,7 @@ import {
   tapeRibbon, cone, mesh, mergeList, boxG, std, TUNNEL,
 } from './props.js';
 import { Figure, FIGURE_WAYPOINTS } from '../Figure.js';
+import { installAnomalies } from './anomalies.js';
 import { rng, clamp } from '../../core/util.js';
 
 const C = (r, g, b) => new THREE.Color(r, g, b);
@@ -33,6 +35,23 @@ export class FeedChannel {
     /** 主控室螢幕光（screenLight）的顏色與強度預設 */
     this.light = { LD: { color: C(0.72, 0.82, 1.0), intensity: 0.5 }, HD: { color: C(0.9, 0.85, 0.8), intensity: 0.5 } };
     this.variant = '';
+    // ---- LD 微事件階段（anomalies.js 安裝；未安裝時只有第 0 階段）----
+    this.stage = 0;
+    this.maxStage = 0;
+    this.meanScales = [1];
+    /** 目前階段的 LD 畫面平均亮度 ÷ 第 0 階段（CameraFeeds 的 AGC 用） */
+    this.meanScale = 1;
+    this._stageFn = null;
+  }
+  /** 冪等、絕對：套用第 k 階段的完整 LD 狀態（夾在 0..maxStage）。回傳實際階段。 */
+  setStage(k) {
+    k = clamp(Math.round(Number(k) || 0), 0, this.maxStage);
+    this.stage = k;
+    this.meanScale = this.meanScales[k] ?? 1;
+    if (this._stageFn) {
+      try { this._stageFn(k); } catch (e) { console.error(`[feeds] CAM-0${this.n} setStage(${k})`, e); }
+    }
+    return k;
   }
   aim(pos, target) {
     this.camera.position.set(pos[0], pos[1], pos[2]);
@@ -68,7 +87,7 @@ function fogBg(ch, v, color, density) {
 // CAM-01 北向隧道入口
 // =============================================================================
 export class Cam01 extends FeedChannel {
-  constructor() {
+  constructor(SCRIPT) {
     super(1);
     const tun = buildTunnel({ length: 160, zStart: 8, lampEvery: 6, lampFrom: -5.5, lamp: () => 1, seed: 1 });
     this.tunnel = tun;
@@ -83,10 +102,18 @@ export class Cam01 extends FeedChannel {
       const p = new THREE.PointLight(0xfff0d8, I, 0, 2);
       p.position.set(0.0, 4.0, z); ld.add(p);
     }
-    for (const L of tun.lamps) if (L.z > -40) ld.add(glow(C(1.0, 0.95, 0.82), [2.6, 1.5], [L.x * 0.97, L.y - 0.05, L.z], { opacity: 0.55 }));
+    this.ldLampGlows = [];
+    for (const L of tun.lamps) {
+      if (L.z <= -40) continue;
+      const g = glow(C(1.0, 0.95, 0.82), [2.6, 1.5], [L.x * 0.97, L.y - 0.05, L.z], { opacity: 0.55 });
+      ld.add(g); this.ldLampGlows.push(g);
+    }
     // 洞口的光（霧中的散射光，不受霧影響地淡淡存在）
-    ld.add(glow(C(0.95, 0.9, 0.78), [46, 26], [1.0, 3.0, -95], { opacity: 0.3, fog: false }));
-    ld.add(glow(C(1.0, 0.95, 0.85), [16, 10], [1.0, 3.0, -95], { opacity: 0.18, fog: false }));
+    this.ldPortalGlows = [
+      glow(C(0.95, 0.9, 0.78), [46, 26], [1.0, 3.0, -95], { opacity: 0.3, fog: false }),
+      glow(C(1.0, 0.95, 0.85), [16, 10], [1.0, 3.0, -95], { opacity: 0.18, fog: false }),
+    ];
+    ld.add(...this.ldPortalGlows);
     this.exposure.LD = 0.72;
     this.light.LD = { color: C(0.75, 0.84, 1.0), intensity: 0.55 };
 
@@ -130,7 +157,7 @@ export class Cam01 extends FeedChannel {
       hd.add(glow(C(1.0, 0.18, 0.1), [2.2, 2.2], [x, 4.45, -9.7], { opacity: 0.55 }));
     }
     mesh(boxG(3.0, 0.9, 0.25, 0, 5.75, -10.05), gantryM, hd);
-    hd.add(plane(2.8, 0.7, TX.vmsTexture(['隧道封閉']), { pos: [0, 5.75, -9.91], basic: true, color: C(1.7, 1.7, 1.7) }));
+    hd.add(plane(2.8, 0.7, TX.vmsTexture(SCRIPT?.feedSigns?.vmsClosed ?? ['隧道封閉']), { pos: [0, 5.75, -9.91], basic: true, color: C(1.7, 1.7, 1.7) }));
     const redL = new THREE.PointLight(0xff3020, 2.2, 0, 2); redL.position.set(0, 4.3, -9.2); hd.add(redL);
     // 濃煙（緩慢朝鏡頭湧來）
     this.smoke = new SmokeField({ count: 36, box: { min: [-6, 0.0, -26], max: [6, 6.2, -13.5] }, vel: [0.0, 0.03, 0.3], size: [6, 11], color: 0x37332f, opacity: 1.0, seed: 11 });
@@ -176,10 +203,18 @@ export class Cam02 extends FeedChannel {
     fogBg(this, 'LD', 0x34383b, 0.024);
     const ld = this.ld;
     ld.add(new THREE.HemisphereLight(0xb8bcc0, 0x303030, 0.35));
+    this.ldLights = [];
     for (const [z, I] of [[-4, 34], [-20, 26], [-38, 20]]) {
-      const p = new THREE.PointLight(0xffefd6, I, 0, 2); p.position.set(0.5, 4.0, z); ld.add(p);
+      const p = new THREE.PointLight(0xffefd6, I, 0, 2); p.position.set(0.5, 4.0, z); ld.add(p); this.ldLights.push(p);
     }
-    for (const L of tun.lamps) if (L.on > 0 && L.z > -70) ld.add(glow(C(1.0, 0.95, 0.85), [1.8, 1.0], [L.x * 0.97, L.y - 0.05, L.z], { opacity: 0.4 }));
+    this.ldLampGlows = [];
+    for (const L of tun.lamps) {
+      if (!(L.on > 0 && L.z > -70)) continue;
+      const g = glow(C(1.0, 0.95, 0.85), [1.8, 1.0], [L.x * 0.97, L.y - 0.05, L.z], { opacity: 0.4 });
+      ld.add(g); this.ldLampGlows.push(g);
+    }
+    /** 熱源亮斑的整體增益（微事件：煙帶推進時壓暗） */
+    this.blobGain = 1;
     this.blob = glow(C(1.0, 0.92, 0.8), [26, 14], [1.2, 1.6, -60], { opacity: 0.85, fog: false });
     this.blobCore = glow(C(1.0, 0.95, 0.88), [8, 4.4], [1.0, 1.1, -60], { opacity: 0.8, fog: false });
     ld.add(this.blob, this.blobCore);
@@ -250,8 +285,9 @@ export class Cam02 extends FeedChannel {
     if (this.variant === 'LD') {
       // 熱源亮斑：極慢的明暗（週期約 4 秒、±8%）
       const k = 1 + Math.sin(t * 1.55) * 0.08 * calm;
-      this.blob.material.opacity = 0.85 * k;
-      this.blobCore.material.opacity = 0.8 * (2 - k);
+      const gain = this.blobGain ?? 1;
+      this.blob.material.opacity = 0.85 * k * gain;
+      this.blobCore.material.opacity = 0.8 * (2 - k) * gain;
       return;
     }
     if (this.variant !== 'HD') return;
@@ -275,6 +311,8 @@ export class Cam02 extends FeedChannel {
 // CAM-03 公務維修廊道 B區（攝影機在防爆門上方，原點 = 防爆門門面，廊道往 -Z）
 // =============================================================================
 export const CORR = { halfW: 0.95, h: 2.75, end: -16.3, opening: [-14.55, -16.15] };
+/** HD 消防水帶的控制點（x, z）：從轉角沿地面拖到門前。LD 的濕拖痕（anomalies.js）沿同一條路徑。 */
+export const HOSE_PATH = [[-1.6, -15.2], [-0.7, -14.4], [-0.1, -12.6], [0.45, -10.5], [0.2, -8.2], [-0.35, -6.0], [-0.1, -3.9], [0.3, -2.3], [0.15, -1.3], [-0.25, -0.9]];
 
 export class Cam03 extends FeedChannel {
   constructor() {
@@ -312,7 +350,10 @@ export class Cam03 extends FeedChannel {
     farFill.position.set(0.0, 0.6, end + 0.3);
     ld.add(farFill);
     this.farLamp = far;
-    ld.add(glow(C(1.0, 0.92, 0.75), [0.8, 0.6], [0.32, 2.52, end + 0.12], { opacity: 0.7 }));
+    this.farFill = farFill;
+    this.farGlow = glow(C(1.0, 0.92, 0.75), [0.8, 0.6], [0.32, 2.52, end + 0.12], { opacity: 0.7 });
+    ld.add(this.farGlow);
+    this.hosePath = HOSE_PATH;
     this.exposure.LD = 3.0;
     this.light.LD = { color: C(0.72, 0.82, 1.0), intensity: 0.5 };
     // 人影投在地上的長影（盡頭燈在他身後時）
@@ -461,17 +502,24 @@ export class Cam03 extends FeedChannel {
     mesh(mergeList(deb), std({ color: 0x1a1816, roughness: 0.9 }), hd);
     hd.add(plane(1.6, 1.4, TX.debrisDecal(152), { pos: [-0.2, 0.012, -12.5], rot: [-Math.PI / 2, 0, 0.4], decal: true }));
     // 消防水帶：從轉角沿地面拖到門前
-    const pts = [[-1.6, -15.2], [-0.7, -14.4], [-0.1, -12.6], [0.45, -10.5], [0.2, -8.2], [-0.35, -6.0], [-0.1, -3.9], [0.3, -2.3], [0.15, -1.3], [-0.25, -0.9]]
-      .map(([x, z]) => new THREE.Vector3(x, 0.03, z));
+    const pts = HOSE_PATH.map(([x, z]) => new THREE.Vector3(x, 0.03, z));
     const curve = new THREE.CatmullRomCurve3(pts);
     const hose = new THREE.TubeGeometry(curve, 90, 0.035, 6, false);
     hose.scale(1, 0.55, 1);
     mesh(hose, std({ color: 0x7a5a40, roughness: 0.8 }), hd);
   }
 
-  /** LD 姿勢＋長影 */
-  setFigurePose(i) {
-    this.figure.setPose(i);
+  /**
+   * LD 姿勢＋長影（sub：同一位置的次姿勢，見 Figure.LD_SUBPOSES）。
+   * 濕拖痕只在 index 改變時延長（次姿勢不改拖痕）→ 只會在盲區裡變化。
+   */
+  setFigurePose(i, sub = false) {
+    this.figure.setPose(i, sub);
+    const idx = this.figure.index;
+    if (this.trail && idx !== this._trailIndex) {
+      this._trailIndex = idx;
+      this.trail.reach(idx >= 2 ? FIGURE_WAYPOINTS[idx].z - 0.35 : null);
+    }
     const w = FIGURE_WAYPOINTS[this.figure.index];
     const lamp = this.farLamp.position;
     const dx = w.x - lamp.x, dz = w.z - lamp.z;
@@ -641,6 +689,12 @@ export class Cam04 extends FeedChannel {
   }
 }
 
-export function createChannels() {
-  return { 1: new Cam01(), 2: new Cam02(), 3: new Cam03(), 4: new Cam04() };
+/**
+ * 建立四個頻道（SCRIPT = ctx.SCRIPT：標誌文字），並安裝 LD 微事件階段（anomalies.js）。
+ * 必須在 CameraFeeds.init()._precompile 之前完成（隱藏的微事件物件也會被一併預編譯）。
+ */
+export function createChannels(SCRIPT) {
+  const chs = { 1: new Cam01(SCRIPT), 2: new Cam02(), 3: new Cam03(), 4: new Cam04() };
+  installAnomalies(chs, SCRIPT);
+  return chs;
 }
