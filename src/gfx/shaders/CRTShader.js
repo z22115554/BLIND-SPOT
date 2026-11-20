@@ -127,6 +127,7 @@ uniform float uReduceFlicker;
 uniform float uExposure;
 uniform float uPrevExposure;
 uniform float uAGC;           // 自動增益：切換頻道後讓新畫面的平均亮度由舊畫面的水準緩慢回到正常
+uniform float uPrevAGC;       // 舊畫面（tPrev）被換掉那一刻的增益：過場中的舊畫面維持它原本被顯示的亮度（連按不會閃）
 uniform float uOSDOn;
 uniform float uOSDPrevOn;
 uniform vec4 uRec;            // xy = OSD uv 中心, z = 半徑（高度比例）, w = 啟用
@@ -302,14 +303,14 @@ void main() {
 
   vec3 col = screenImage(uMode, tFeed, fuv, uExposure) * uAGC;
   if (sw > 0.0) {
-    vec3 pc = screenImage(uMode, tPrev, fuv, uPrevExposure);
+    vec3 pc = screenImage(uMode, tPrev, fuv, uPrevExposure) * uPrevAGC;
     col = mix(col, pc, smoothstep(0.3, 0.7, sw));
     // 平均為零的撕裂雜訊（不改變整體亮度）
     float n = hash12(floor(fuv * vec2(200.0, 150.0)) + floor(uTime * 30.0) * 3.7) - 0.5;
     col *= (1.0 + n * 0.45 * swk * (1.0 - 0.6 * uReduceFlicker)) * vbi;
   }
   if (uModeMix < 0.999) {
-    vec3 pm = screenImage(uPrevMode, tPrev, uv, uPrevExposure);
+    vec3 pm = screenImage(uPrevMode, tPrev, uv, uPrevExposure) * uPrevAGC;
     col = mix(pm, col, smoothstep(0.0, 1.0, uModeMix));
   }
 
@@ -391,6 +392,7 @@ export function createCRTMaterial({ feed = null, prev = null, osd = null, osdPre
       uExposure: { value: 1 },
       uPrevExposure: { value: 1 },
       uAGC: { value: 1 },
+      uPrevAGC: { value: 1 },
       uOSDOn: { value: 0 },
       uOSDPrevOn: { value: 0 },
       uRec: { value: new THREE.Vector4(0.9, 0.9, 0.012, 0) },
@@ -421,8 +423,32 @@ uniform vec3 uTone;
 uniform vec4 uCursor;      // 游標矩形（uv：x0,y0,x1,y1）
 uniform vec2 uTexel;
 uniform float uBrightness;
+uniform float uSnow;       // 0 = 文字畫面，1 = 訊號中斷的雪花（低對比、平均亮度與文字畫面相近；由 SideScreen 平滑過渡）
 varying vec2 vUv;
 ${commonGLSL}
+// 終端機的雪花：與主 CRT 的 STATIC 同一種低對比雜訊，但更暗（平均亮度約等於一整頁文字的平均亮度）
+vec3 termSnow(vec2 uv) {
+  float t = uTime, p;
+  if (uReduceFlicker > 0.5) {
+    float f = t * 6.0; float fi = floor(f);
+    vec2 q = uv * vec2(80.0, 60.0) + vec2(t * 0.7, t * 0.25);
+    float n = mix(vnoise(q + fi * 17.0), vnoise(q + (fi + 1.0) * 17.0), fract(f));
+    p = 0.205 + (n - 0.5) * 0.07;
+  } else {
+    vec2 cell = floor(uv * vec2(260.0, 196.0));
+    float fr = floor(t * 24.0);
+    float n = hash12(cell + fr * vec2(23.1, 41.7));
+    float n2 = hash12(vec2(floor(cell.x / 5.0), cell.y) + fr * vec2(7.3, 3.9));
+    n = mix(n, n2, 0.4);
+    p = 0.205 + (n - 0.5) * 0.16;
+  }
+  float by = fract(t / 5.6);
+  float dy = uv.y - by; dy -= floor(dy + 0.5);
+  p -= exp(-dy * dy / (2.0 * 0.05 * 0.05)) * 0.03;
+  // 磷光色調（去飽和）：單色終端機的雪花帶一點螢光粉的顏色
+  vec3 tint = mix(vec3(0.9, 0.95, 1.0), uTone / max(max(uTone.r, uTone.g), uTone.b), 0.45);
+  return vec3(pow(clamp(p, 0.0, 1.0), 2.2)) * tint;
+}
 void main() {
   vec2 uv = barrel(vUv, 0.035);
   float mask = tubeMask(uv, 0.03);
@@ -438,6 +464,7 @@ void main() {
   float cur = inC * mix(0.55 + 0.45 * sin(uTime * 6.2831853 / 1.6), 0.8, uReduceFlicker);
   float v = a * 0.62 + glow * 0.16 + glow2 * 0.07 + cur * 0.55;
   vec3 col = uTone * v + uTone * 0.006 + vec3(0.002, 0.003, 0.0025);
+  if (uSnow > 0.001) col = mix(col, termSnow(uv), clamp(uSnow, 0.0, 1.0));
   // 掃描線
   float lines = 200.0;
   float fw = fwidth(uv.y * lines);
@@ -468,6 +495,7 @@ export function createTerminalMaterial(textTexture, { texel = [1 / 512, 1 / 384]
       uCursor: { value: new THREE.Vector4(0, 0, 0, 0) },
       uTexel: { value: new THREE.Vector2(texel[0], texel[1]) },
       uBrightness: { value: 1 },
+      uSnow: { value: 0 },
     },
     vertexShader,
     fragmentShader: termFragment,

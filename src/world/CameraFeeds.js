@@ -52,10 +52,15 @@ const FEED_W = 640, FEED_H = 480;
 const LD_INTERVAL = 0.1;        // LD：10fps
 const HD_INTERVAL = 1 / 30;     // HD / BOOT：30fps
 const SWITCH_DUR = 0.25;        // 頻道切換過場
-const AGC_DUR = 1.1;            // 切換後亮度回復時間
+const AGC_DUR = 2.0;            // 切換後亮度回復時間（自動增益慢慢回到 1；0.25 秒內的變化 < 20%）
 const SCREEN_LIGHT_SCALE = 2.2; // 螢幕光強度（燭光）＝ 頻道預設 × 此倍率 × screenLightGain
-// 各頻道畫面在 CRT 上的平均亮度（sRGB 0–255，實測值）：切換頻道時用來做自動增益補償，避免亮度跳變
+// 各頻道畫面在 CRT 上的平均亮度（sRGB 0–255 的概略值）：只用來決定「模式」交叉淡化的長短
 const FEED_MEAN = { LD: { 1: 51, 2: 31, 3: 25, 4: 40 }, HD: { 1: 23, 2: 26, 3: 27, 4: 35 } };
+// 自動增益（AGC）用：各頻道「畫面內容」在 CRT 上的平均線性亮度（實測：坐姿看主 CRT 的螢幕區域、增益 = 1、
+// 穩定 1.2 秒的平均，再扣掉關機時的玻璃反光底值 0.004）。切換頻道時新畫面先以舊畫面的平均亮度出現，
+// 再用 AGC_DUR 慢慢回到自己的亮度（像監視器的自動曝光）。AGC 只乘在畫面內容上（OSD 不受影響）。
+const FEED_LUM = { LD: { 1: 0.0281, 2: 0.0197, 3: 0.0104, 4: 0.0280 }, HD: { 1: 0.0085, 2: 0.0096, 3: 0.0115, 4: 0.0198 } };
+const AGC_MIN = 0.35, AGC_MAX = 2.8;   // 表是實測的，範圍只是防呆（CAM-03 與 CAM-01/04 相差約 2.7 倍）
 
 export class CameraFeeds {
   constructor(ctx) {
@@ -108,6 +113,7 @@ export class CameraFeeds {
     this._shownChannel = this.channel;
     this._prevExposure = 1;
     this._agc = 1;
+    this._prevAgc = 1;          // 舊畫面被換掉那一刻的增益（過場中舊畫面維持原本的亮度）
     this._agcFrom = 1;
     this._agcT = 1;
     this._switch = 0;
@@ -214,8 +220,9 @@ export class CameraFeeds {
     this._hdObs = { 1: 0, 2: 0, 3: 0, 4: 0 };
     // 立即呈現（重置發生在全黑畫面中，不需要轉場）
     this._shownMode = 'LD'; this._prevMode = 'LD'; this._modeMix = 1;
-    this._shownChannel = 3; this._switch = 0; this._boot = 0; this._agc = 1; this._agcT = 1;
+    this._shownChannel = 3; this._switch = 0; this._boot = 0; this._agc = 1; this._agcT = 1; this._prevAgc = 1;
     for (const ch of Object.values(this.channels)) ch.setVariant('LD');
+    for (const s of this.sideScreens) s.snow = 0;
     this.figure.setAction(false);
     this._applyFigure();
     this.osd.swap();
@@ -240,6 +247,7 @@ export class CameraFeeds {
     const prev = this._shownMode;
     this._prevMode = prev;
     this._prevExposure = this._exposureFor(this._shownChannel, prev);
+    this._prevAgc = this._agc;
     this._osdPrevOn = this._osdOn;
     this._shownMode = m;
     const seamless = prev === 'BOOT' && m === 'HD';
@@ -274,11 +282,12 @@ export class CameraFeeds {
   _beginSwitch(n) {
     const showsFeed = this._shownMode === 'LD' || this._shownMode === 'HD' || this._shownMode === 'BOOT' || this._shownMode === 'STATIC';
     this._prevExposure = this._exposureFor(this._shownChannel, this._shownMode);
+    this._prevAgc = this._agc;
     // 自動增益：新畫面先以舊畫面的平均亮度出現，再緩慢回到自己的亮度
     const v = this._shownMode === 'LD' ? 'LD' : (this._shownMode === 'HD' || this._shownMode === 'BOOT') ? 'HD' : null;
     if (v) {
-      const a = FEED_MEAN[v][this._shownChannel] || 30, b = FEED_MEAN[v][n] || 30;
-      this._agcFrom = clamp(this._agc * Math.pow(a / b, 2.2), 0.33, 3);
+      const a = FEED_LUM[v][this._shownChannel] || 0.03, b = FEED_LUM[v][n] || 0.03;
+      this._agcFrom = clamp(this._agc * (a / b), AGC_MIN, AGC_MAX);
       this._agcT = 0;
       this._agc = this._agcFrom;
     }
@@ -383,7 +392,8 @@ export class CameraFeeds {
     this._t = t;
     // ---- 反應式轉場：允許其他模組直接指定 mode / channel ----
     if (this.mode !== this._shownMode) this._beginMode(this.mode);
-    if (this.channel !== this._shownChannel) this._beginSwitch(this.channel);
+    // 切換過場還沒結束時不接新的切換（連按按鈕只會在前一次過場結束後切到最後選的頻道，不會疊成閃爍）
+    if (this.channel !== this._shownChannel && this._switch <= 0) this._beginSwitch(this.channel);
     if (this.figureIndex !== this._shownIndex) this._applyFigure();
 
     // ---- 盲區規則、HD 注視 ----
@@ -422,6 +432,7 @@ export class CameraFeeds {
     u.uExposure.value = this._exposureFor(this._shownChannel, this._shownMode);
     u.uPrevExposure.value = this._prevExposure;
     u.uAGC.value = this._agc;
+    u.uPrevAGC.value = this._prevAgc;
     u.tFeed.value = this.renderTargets[this._cur].texture;
     u.tPrev.value = this.renderTargets[1 - this._cur].texture;
     u.tOSD.value = this.osd.texture;
@@ -437,9 +448,12 @@ export class CameraFeeds {
 
     // ---- 側邊螢幕 ----
     const sideOn = this.mode !== 'OFF' ? 1 : 0;
+    // 主 CRT 訊號中斷（STATIC）時兩台系統監視器也一起變成雪花；開機（BOOT → HD）時一起回來
+    const sm = this._shownMode;
+    const sideSnow = sm === 'STATIC' ? 1 : sm === 'BOOT' ? 1 - smoothstep(0.35, 0.8, this._boot) : 0;
     for (const s of this.sideScreens) {
       s.setClock(this.ctx.flags?.clockText || '');
-      s.update(dt, t, { on: sideOn, reduceFlicker, brightness: this._bright });
+      s.update(dt, t, { on: sideOn, reduceFlicker, brightness: this._bright, snow: sideSnow });
     }
 
     // ---- 螢幕光（平滑跟隨畫面內容；無閃爍）----
@@ -457,7 +471,8 @@ export class CameraFeeds {
       L.color.lerp(this._lightTarget.color, a);
       L.intensity += (this._lightTarget.intensity - L.intensity) * a;
       ctl.color.copy(L.color);
-      ctl.intensity = Math.max(0, L.intensity * SCREEN_LIGHT_SCALE * this.screenLightGain * this._bright * Math.sqrt(this._agc));
+      // 自動增益只作用在 CRT 畫面上，不乘進房間的螢幕光（否則切換頻道的那一幀房間亮度會跳變）
+      ctl.intensity = Math.max(0, L.intensity * SCREEN_LIGHT_SCALE * this.screenLightGain * this._bright);
     }
 
     // ---- 渲染節奏：LD 10fps（CCTV 頓挫感）、HD/BOOT 30fps ----
