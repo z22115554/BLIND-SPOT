@@ -61,13 +61,15 @@ const POSE = {
   intercom: { x: -3.2, z: -1.55, yaw: Math.PI / 2, pitch: 0, seated: false },
   vent: { x: 3.2, z: -1.6, yaw: -Math.PI / 2, pitch: 0, seated: false },
 };
-const STIM = new Set(['alert', 'gate', 'knock', 'ventDying', 'vacuum', 'seenMove', 'callStart']);
+// lockDone / leverDone：玩家自己完成閘門動作的那一刻（鎖栓入位＋洩壓聲＋門燈轉紅 / 拉桿＋風扇重新轉起來）。
+// 這段時間玩家一直有事做（走過去、操作、走回來），不算「沒事可做」的空檔（整合時加入）。
+const STIM = new Set(['alert', 'gate', 'knock', 'ventDying', 'vacuum', 'seenMove', 'callStart', 'lockDone', 'leverDone']);
 
 // ---- 頁面內記錄器（在 window.BS 被指定的瞬間安裝）------------------------------------------
 const RECORDER = `(() => {
   const R = window.__pr = { ev: [], t0: null, t1: null, figAtBlackout: null, figMax: 0, stage: [], flags: {}, pace: [] };
   const push = (kind, o = {}) => { try { R.ev.push(Object.assign({ t: +window.BS.clock.time.toFixed(3), clk: window.BS.flags.clockText, kind }, o)); } catch (e) {} };
-  const FLAGS = { lockPending: 'gate:lock', intercomRinging: 'gate:call', ventFault: 'gate:vent', intercomTalking: 'callStart', ventDying: 'ventDying', ventStopped: 'vacuum', doorKnocked: 'knock' };
+  const FLAGS = { lockPending: 'gate:lock', intercomRinging: 'gate:call', ventFault: 'gate:vent', intercomTalking: 'callStart', ventDying: 'ventDying', ventStopped: 'vacuum', doorKnocked: 'knock', blastLocked: 'lockDone', ventCut: 'leverDone' };
   function install(B) {
     B.bus.on('state:change', ({ to }) => {
       if (to === 'STATE_MONITORING' && R.t0 == null) { R.t0 = B.clock.time; push('actStart'); }
