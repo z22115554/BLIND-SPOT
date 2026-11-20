@@ -122,6 +122,7 @@ async function runOnce(browser, runIdx) {
   const seed = seed0 + runIdx;
   const R = mulberry32(seed * 7919 + 17);
   const U = ([a, b]) => a + (b - a) * R();
+  const wall0 = Date.now();
   const page = await browser.newPage({ viewport: { width: VW, height: VH }, deviceScaleFactor: 1 });
   page.setDefaultTimeout(120000);
   const errors = [], paceLines = [];
@@ -235,7 +236,7 @@ async function runOnce(browser, runIdx) {
   await page.waitForFunction(() => window.__pr.t1 != null, null, { timeout: 3000, polling: 200 }).catch(() => {});
   const rec = await ev(() => ({ ...window.__pr, pace: (window.__paceLog || []).slice(), dump: window.BS.director?.dump?.() ?? null }));
   await page.close();
-  return { seed, rec, errors, paceLines, abort, timedOut: Date.now() >= tEnd };
+  return { seed, rec, errors, paceLines, abort, timedOut: Date.now() >= tEnd, wallS: (Date.now() - wall0) / 1000 };
 }
 
 function analyse(r) {
@@ -263,7 +264,7 @@ function analyse(r) {
   const cam3 = alerts.filter((e) => e.ch === 3).length;
   const violations = (rec.stage || []).filter((s) => s.inAct && !s.force && s.mode === 'LD' && (s.ch === 3 ? s.shown && s.obs : s.shown));
   // 每分鐘表
-  const flips = ev.filter((e) => e.kind === 'flip' || e.kind === 'actStart');
+  const flips = ev.filter((e) => (e.kind === 'flip' || e.kind === 'actStart') && (t1 == null || e.t < t1));
   const minutes = [];
   for (let i = 0; i < flips.length; i++) {
     const a = flips[i].t, b = i + 1 < flips.length ? flips[i + 1].t : (t1 ?? a);
@@ -282,7 +283,7 @@ function analyse(r) {
 
 const f1 = (v) => (v == null ? '   -  ' : v.toFixed(1).padStart(6));
 function printRun(r, a) {
-  console.log(`\n=== run seed=${r.seed} persona=${personaName} speed=${speed} ${r.abort ? 'ABORT: ' + r.abort : ''}${r.timedOut ? ' (timed out)' : ''}`);
+  console.log(`\n=== run seed=${r.seed} persona=${personaName} speed=${speed} (${r.wallS.toFixed(0)} s wall) ${r.abort ? 'ABORT: ' + r.abort : ''}${r.timedOut ? ' (timed out)' : ''}`);
   console.log(' clock  start    dur  cued alerts  cam3  fig steps  subs  events');
   for (const m of a.minutes) {
     console.log(` ${String(m.clk).padEnd(5)} ${f1(m.start)} ${f1(m.dur)}  ${(m.alerts.map((n) => `CAM-0${n}`).join(',') || '-').padEnd(11)} ${String(m.cam3).padStart(4)}  ${(m.steps.join(',') || '-').padEnd(9)} ${(m.subs.join(',') || '-').padEnd(5)} ${m.events.join(' ')}`);
@@ -315,7 +316,7 @@ try {
     printRun(r, a);
     const fails = check(r, a);
     if (fails.length) { console.log(` ${doAssert ? 'FAIL' : 'note'}: ` + fails.join('\n       ')); if (doAssert) failed++; }
-    else console.log(' PASS');
+    else console.log(doAssert ? ' PASS' : ' (no notes)');
     results.push({ seed: r.seed, analysis: a, abort: r.abort, errors: r.errors, paceLines: r.paceLines, events: r.rec.ev, stage: r.rec.stage, pace: r.rec.pace, dump: r.rec.dump });
   }
 } finally {
@@ -323,7 +324,7 @@ try {
 }
 const acts = results.map((x) => x.analysis.act).filter((v) => v != null).sort((a, b) => a - b);
 const gapsNV = results.map((x) => x.analysis.gapNoVac.gap).sort((a, b) => a - b);
-console.log(`\n=== summary persona=${personaName} runs=${runs} speed=${speed}: act ${acts.map((v) => v.toFixed(1)).join(' / ') || '-'} s | max gap excl. vacuum ${gapsNV.map((v) => v.toFixed(1)).join(' / ')} s | ${failed ? `${failed} FAILED` : 'all passed'}`);
+console.log(`\n=== summary persona=${personaName} runs=${runs} speed=${speed}: act ${acts.map((v) => v.toFixed(1)).join(' / ') || '-'} s | max gap excl. vacuum ${gapsNV.map((v) => v.toFixed(1)).join(' / ')} s | ${!doAssert ? 'assertions off (--no-assert)' : failed ? `${failed} FAILED` : 'all passed'}`);
 const file = path.join(outDir, `pacing-${personaName}-${Date.now()}.json`);
 writeFileSync(file, JSON.stringify({ persona: personaName, speed, size: `${VW}x${VH}`, query: extra, results }, null, 1));
 console.log(`details → ${path.relative(root, file)}`);
