@@ -321,12 +321,24 @@ export async function playIntercom(state, stageIndex, { hold = 1.5 } = {}) {
     T(() => ctx.subtitles?.clear?.(0.4));
     T(() => ctx.controlRoom?.setIntercomLed?.('off'));
   });
+  // 字幕與語音同步：語音在 AudioContext 時鐘上播放，遊戲時鐘在低幀率時（每幀 dt 上限 0.1 秒）會比真實時間慢，
+  // 所以每一段字幕在「遊戲時間到了」或「語音時間到了」兩者較早的那一刻出現（暫停時兩個時鐘都停）。
+  // 以語音開始時間為基準累加（不會逐段累積誤差）；沒有音訊時只看遊戲時間。
+  const audio = ctx.audio;
+  const a0 = Number.isFinite(res?.startAt) ? res.startAt : null;
+  const audioAt = () => {
+    try { return a0 != null && audio?.ready && audio.ac?.state === 'running' ? audio.now() - a0 : -Infinity; } catch (e) { return -Infinity; }
+  };
+  const g0 = ctx.clock.time;
+  const until = (cum) => state.until(() => ctx.clock.time - g0 >= cum - 1e-6 || audioAt() >= cum);
+  let cum = 0;
   for (const seg of stage.segments) {
     T(() => ctx.subtitles?.append?.(seg.text), 'subtitles');
-    await state.wait(seg.dur);
+    cum += Number(seg.dur) || 0;
+    await until(cum);
   }
-  if (done) await state.guard(Promise.race([done, ctx.clock.wait(2)]));
-  await state.wait(hold);
+  if (done) await state.guard(Promise.race([done, ctx.clock.wait(2), until(cum)]));
+  await until(cum + hold);
   finished = true;
   T(() => ctx.subtitles?.clear?.(0.8), 'subtitles');
   T(() => ctx.controlRoom?.setIntercomLed?.('off'), 'intercomLed');

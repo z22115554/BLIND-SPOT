@@ -16,6 +16,7 @@ import { FONTS } from '../gfx/canvasUtil.js';
 import { injectStyle, uiRoot, el, reveal, renderMarkup, baseCss } from './uiCommon.js';
 
 // 【補充文案】觸控裝置提醒（script.js 沒有對應字串；整合時可移到 SCRIPT.title.touchNotice）
+const PAUSE_FADE_MS = 1400;   // 暫停幕淡入/淡出（毫秒），見 .bs-pause 的 linear() 曲線
 const TOUCH_NOTICE = '本作需要鍵盤與滑鼠操作。觸控裝置可以開始遊戲，但可能無法正常遊玩。';
 
 const CSS = `
@@ -169,8 +170,14 @@ const CSS = `
 /* ---------- 暫停 ---------- */
 .bs-pause { position: absolute; inset: 0; z-index: 8; pointer-events: auto; display: grid; place-items: center;
   padding: 2em 1.2em; overflow-y: auto; background: rgba(2, 2, 2, 0.8); cursor: pointer;
-  opacity: 0; transition-property: opacity; transition-timing-function: ease; }
-.bs-pause.is-on { opacity: 1; }
+  opacity: 0; transition-property: opacity;
+  /* 背景亮度（1 ↔ 0.2）以對數等速變化：0.25 秒內亮度變化 ≤ 約 25%（1.4 秒；光敏感模式 2.1 秒）。
+     linear() 精確描述該曲線；不支援的瀏覽器退回近似的 cubic-bezier。此規則是「淡出」用（亮度回升）。 */
+  transition-timing-function: cubic-bezier(0.55, 0.06, 0.82, 0.55);
+  transition-timing-function: linear(0, 0.044, 0.095, 0.155, 0.226, 0.309, 0.407, 0.521, 0.656, 0.814, 1); }
+.bs-pause.is-on { opacity: 1;
+  transition-timing-function: cubic-bezier(0.18, 0.45, 0.45, 0.94);
+  transition-timing-function: linear(0, 0.186, 0.344, 0.479, 0.593, 0.691, 0.774, 0.845, 0.905, 0.956, 1); }
 .bs-pause__panel { position: relative; isolation: isolate; width: min(30em, 100%); }
 .bs-pause__panel::before { content: ''; position: absolute; z-index: -1; inset: -4em -6em; border-radius: 50%;
   background: radial-gradient(closest-side, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.6) 55%, rgba(0, 0, 0, 0) 100%); pointer-events: none; }
@@ -567,7 +574,9 @@ export class UI {
     }
     this._pauseOn = !!on;
     if (on) this._syncSettingsViews();
-    reveal(this.pauseEl, !!on, on ? 450 : 400);
+    // 暫停幕的明暗變化與其他亮度變化同一規則（≥ 1.3 秒、對數等速）；光敏感模式再慢 1.5 倍
+    const calm = !!this.ctx.settings?.get?.('reduceFlicker');
+    reveal(this.pauseEl, !!on, Math.round(PAUSE_FADE_MS * (calm ? 1.5 : 1)));
   }
 
   // ===========================================================================
