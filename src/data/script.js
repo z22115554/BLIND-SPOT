@@ -164,7 +164,9 @@ export const SCRIPT = {
   },
   pause: { title: '已暫停', resume: '點擊畫面繼續值班' },
 
-  verbs: { inspect: '檢視', use: '使用', answer: '接聽', open: '開啟', take: '拿取', press: '按下', pull: '拉下' },
+  verbs: { inspect: '檢視', use: '使用', answer: '接聽', open: '開啟', take: '拿取', press: '按下', pull: '拉下',
+    lock: '上鎖',                                               // 【補充文案】02:00 上鎖互動
+  },
 
   interact: {
     stickyNote: '黃色便利貼',
@@ -186,6 +188,8 @@ export const SCRIPT = {
     breaker: '電閘室總開關',
     breakerDone: '總開關（已復歸）',
     unlockButton: '防爆門緊急解鎖',
+    blastDoorWheel: '防爆門氣壓閥手輪',                        // 【補充文案】02:00 上鎖互動
+    camButtonAlert: (n) => `切換至 CAM-0${n}（動態偵測）`,     // 【補充文案】該頻道有未查看的動態偵測
   },
 
   descriptions: {
@@ -193,6 +197,9 @@ export const SCRIPT = {
     sideDoorLocked: '電磁鎖的指示燈亮著綠色。沒有停電之前打不開。',
     ventOk: '主排風機運轉中。轉速表的指針在綠區輕輕顫動。',
     intercomIdle: '對講機的通話燈是暗的。',
+    blastDoorUnlocked: '氣壓閥沒有加壓，鎖栓縮在門框裡。',     // 【補充文案】上鎖前（序幕）
+    blastDoorWarm: '鋼板摸起來是溫的。',                        // 【補充文案】02:05 敲門後附加
+    coffeeStill: '從你醒來到現在，它一點都沒有變涼。',          // 【補充文案】T2：02:08 起附加
   },
 
   objectives: {
@@ -206,6 +213,7 @@ export const SCRIPT = {
     revelation: '檢視恢復供電的監視器畫面',
     answerClean: '接聽緊急對講機',
     ending: '……',
+    lockDoor: '鎖死防爆門',                                     // 【補充文案】02:00 上鎖閘門
   },
 
   hints: {
@@ -215,6 +223,8 @@ export const SCRIPT = {
     scrollInspect: '滾輪捲動',
     frameError: '畫面更新發生錯誤。請重新整理頁面（F5）再試一次。',
     pointerLockFallback: '無法鎖定滑鼠：請按住滑鼠左鍵拖曳來環顧',
+    lockDoor: '防爆門在西牆。轉動門上的氣壓閥手輪即可上鎖。',     // 【補充文案】nag 20 s / 30 s
+    motion: '控制台的 CAM 按鈕亮起琥珀燈：該頻道偵測到動態。',     // 【補充文案】首次提示 20 秒未查看
   },
 
   // 側邊系統監視器（左：系統事件／右：機電狀態）
@@ -222,10 +232,11 @@ export const SCRIPT = {
     leftTitle: 'SYS LOG',
     rightTitle: '機電狀態',
     normal: ['供電：正常', '通風：運轉中', '防爆門：鎖定', '監控：低頻寬模式'],
+    normalUnlocked: ['供電：正常', '通風：運轉中', '防爆門：未鎖定', '監控：低頻寬模式'],   // 【補充文案】02:00 上鎖前
     ventFault: ['供電：正常', '通風：轉速異常 ▲', '防爆門：鎖定', '監控：低頻寬模式'],
     ventDying: ['供電：電壓不穩', '通風：主排風停止', '防爆門：鎖定', '監控：低頻寬模式'],
     blackout: ['供電：中段繼電器跳脫', '通風：停止', '防爆門：鎖定（氣壓閥）', '監控：訊號中斷'],
-    restored: ['供電：已復歸', '通風：主排風 手動切斷（02:11 操作員）', '防爆門：鎖定（氣壓閥）', '監控：高清模式'],
+    restored: ['供電：已復歸', '通風：主排風 手動切斷（02:05 操作員）', '防爆門：鎖定（氣壓閥）', '監控：高清模式'],
     logLines: [
       '02:00 值班交接完成',
       '02:03 緊急對講機 來電',
@@ -236,7 +247,22 @@ export const SCRIPT = {
     ],
     bandwidth: '頻寬限制已解除｜切換高清彩色訊號',
     noSignal: 'NO SIGNAL｜訊號中斷',
+    // 【補充文案】SYS LOG 動態行（與 logLines 依時間合併）
+    lockLog: (hhmm) => `${hhmm} 防爆門 手動上鎖（操作員）`,
+    motionLog: (hhmm, n) => `${hhmm} CAM-0${n} 動態偵測`,
+    ventManualLog: (hhmm) => `${hhmm} 主排風 手動操作`,
+    knockLog: (hhmm) => `${hhmm} 防爆門 震動感測`,
   },
+
+  // 【補充文案】監視器動態偵測（CCTV 微事件）
+  feedUI: {
+    motionTag: (stamp) => `▲ 動態偵測 ${stamp}`,                          // 被警示頻道：CAM id 下方
+    alarmLine: (chs) => `▲ ${chs.map((n) => `CAM-0${n}`).join(' ')}`,    // 目前畫面：時間戳下方
+    firstStamp: '01:58:41',                                              // 第一次 CAM-04 警示的偵測時間
+    frozenTime: '02:14:08',                                              // CAM-04 停住的時間戳
+  },
+  // 【補充文案】頻道場景內的標誌文字（原本硬寫在 channels.js 的「隧道封閉」移入）
+  feedSigns: { vmsFog: ['濃霧', '減速慢行'], vmsClosed: ['隧道封閉'] },
 
   // 第三幕：側邊監視器顯示的事故調查摘要（揭露三年前的真相）
   incidentReport: {
@@ -245,7 +271,7 @@ export const SCRIPT = {
       '01:45 隧道中段多車追撞，油罐車起火。',
       '01:58 特種消防救援隊進入維修廊道。',
       '02:05 救援隊員抵達中央控制室防爆門外。',
-      '02:11 主排風遭控制室內手動切斷。',
+      '02:05 主排風遭控制室內手動切斷。',
       '02:14 中段供電中斷，濃煙倒灌。',
       '救援隊員一名，於防爆門外殉職。',
       '控制室值班員一名，於室內窒息身亡。',
