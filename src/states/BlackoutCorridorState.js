@@ -15,6 +15,9 @@ import {
 
 const CORRIDOR_ZONES = ['corridor', 'switchRoom'];
 
+const EMERGENCY_FADE = 2.0;   // 跳電後轉為紅色緊急照明的時間（光敏感模式 × 1.6）
+const DIRECT_FADE_IN = 2.4;   // ?state=BLACKOUT_CORRIDOR 直接進入時的淡入
+
 export class BlackoutCorridorState extends StoryState {
   async enter(data = {}) {
     const ctx = this.ctx;
@@ -24,13 +27,14 @@ export class BlackoutCorridorState extends StoryState {
     this._leaving = false;
     if (direct) {
       applyPreset(ctx, STATES.BLACKOUT_CORRIDOR);
-      this.fadeTo(0, 1.2);
+      // 直接進入（除錯跳關）：由黑淡入 2.4 秒（原本 1.2 秒，0.25 秒內最多變化約 52%），淡入結束後才跳電
+      this.fadeTo(0, DIRECT_FADE_IN);
     } else this.ensureVisible();
     this.on('flashlight:take', () => this.onFlashlight());
     this.on('sideDoor:open', () => this.onSideDoor());
     this.on('breaker:pull', () => this.onBreaker());
     this.on('player:zone', ({ to } = {}) => this.onZone(to));
-    if (direct) await this.wait(1.8);
+    if (direct) await this.wait(DIRECT_FADE_IN + 0.4);
     await this.trip();
   }
 
@@ -46,13 +50,14 @@ export class BlackoutCorridorState extends StoryState {
     T(() => a?.setIntercomRing?.(false));
     ctx.flags.blackout = true;
     setClock(ctx, ctx.CLOCK.blackout);
-    // 電壓下降：日光燈變暗、偏黃（0.7 秒），接著熄滅並切換為紅色緊急照明（1.5 秒）；
-    // 全程單調變暗。光敏感模式下再放慢一半。
+    // 電壓下降：日光燈變暗、偏黃（0.7 秒），接著熄滅並切換為紅色緊急照明（2.0 秒：白光 1.0 秒內熄滅、紅光 1.0 秒亮起）；
+    // 全程單調變暗。光敏感模式下再放慢 1.6 倍。
+    // （原本 1.5 秒：白光 0.75 秒熄滅那一段整個畫面每 0.25 秒掉 29–32%，貼著上限；2.0 秒實測見 docs/pacing/STATUS.md）
     const slow = ctx.settings?.get?.('reduceFlicker') ? 1.6 : 1;
     T(() => cr?.setLighting?.('restored', { duration: 0.7 * slow }));
     T(() => a?.setHum?.(0.16, 0.6));
     await this.wait(0.5 * slow);
-    T(() => cr?.setLighting?.('emergency', { duration: 1.5 * slow }));
+    T(() => cr?.setLighting?.('emergency', { duration: EMERGENCY_FADE * slow }));
     T(() => a?.setHum?.(0, 0.9));
     T(() => fd?.setMode?.('STATIC'));
     setLeftLog(ctx, ctx.CLOCK.blackout, 'warn');
