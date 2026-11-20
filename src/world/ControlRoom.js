@@ -16,6 +16,10 @@
 //   * 室內光源只有 3 盞 SpotLight（日光燈位置／緊急紅燈位置共用，切換時先熄再移再亮）＋1 盞補光 PointLight
 //     ＋螢幕光＋解鎖鈕紅光，避免光源數量拖慢其他場景。
 //   * 防爆門外的短廊使用不受光的暗色材質（頂點色由門口向內遞減），保證永遠只有黑暗與深度。
+//   * CAM 按鈕指示燈（docs/pacing/spec.md §3.2）：目前頻道綠燈；有未查看的動態偵測（feeds.alertLevel(n)）時
+//     交叉淡化成琥珀色並緩慢呼吸（週期 2.4 秒、亮度起伏 ≤ 15%；光敏感模式恆亮）。只改 LED 顏色，不加光源。
+//   * 防爆門上鎖（spec §3.5 / §6.5）：setBlastLocked(locked, { duration }) → Promise、blastLocked；
+//     門上狀態燈：未鎖定 綠／上鎖中・解鎖中 琥珀緩慢起伏／已鎖定 紅（顏色變化 ≥ 0.4 秒）。
 // =============================================================================
 import * as THREE from 'three';
 import { Batcher, Fader, keyCurve, quad, noRaycast } from './controlRoom/kit.js';
@@ -62,6 +66,12 @@ const SMOKE_DESAT = 0.86;       // 煙色往亮度去飽和的比例（0 = 光�
 const SMOKE_K_SPOT = 0.0065;    // 每盞日光燈（cd）對煙色的貢獻
 const SMOKE_K_FILL = 0.011;     // 補光（cd）對煙色的貢獻
 const SMOKE_FLOOR = new THREE.Color(0.006, 0.0048, 0.0038);
+// 指示燈的緩慢呼吸：亮度在 [1 - depth, 1] 之間以 period 秒的餘弦起伏（depth ≤ 0.15 = 黃金規則的 15% 上限）
+// CAM 按鈕的動態偵測琥珀燈；光敏感模式恆亮 steady。
+const CAM_LED = { period: 2.4, depth: 0.15, steady: 0.8, glow: 0.45 };
+// 防爆門狀態燈：上鎖中 / 解鎖中的琥珀燈（週期 1.4 秒）；光敏感模式恆亮 0.6
+const BLAST_LAMP = { period: 1.4, depth: 0.15, level: 0.7, steady: 0.6, unlocked: 0.7, lerp: 5 };
+const breathe = (t, period, depth) => 1 - depth * (0.5 - 0.5 * Math.cos((t * Math.PI * 2) / period));
 const EMBER_MAX = 0.36;         // 焦黑龜裂的餘燼光（線性 HDR）
 // 終幕火光：補光（PointLight）移到防爆門內側、變成橘紅色，隨焦黑出現/退去（場景光源數量不變）
 const FIRE_CD = 15;
@@ -534,6 +544,37 @@ export class ControlRoom {
     this._blastState = open ? 'open' : 'locked';
   }
 
+  /**
+   * 防爆門氣壓閥上鎖 / 解鎖（門保持關著）：手輪轉 2.5 圈（0.7·duration，上鎖反向），再推出 / 縮回鎖栓（0.3·duration）。
+   * duration ≤ 0 立即完成（跳關/重置）。狀態燈：'locking' | 'unlocking' → 'locked' | 'unlocked'。
+   * @returns {Promise<void>}
+   */
+  setBlastLocked(locked, { duration = 2.4 } = {}) {
+    const P = this.parts.blast;
+    const tok = this._token('blast');
+    locked = !!locked;
+    const b1 = locked ? 0 : 0.12;
+    if (!(duration > 0)) {
+      P.door.position.z = 0;
+      P.bolts.position.z = b1;
+      this._blastState = locked ? 'locked' : 'unlocked';
+      return Promise.resolve();
+    }
+    const alive = () => this._tok.blast === tok;
+    const dir = locked ? -1 : 1;    // openBlastDoor 解鎖時手輪 +2.5π；上鎖反向
+    const w0 = P.wheel.rotation.x;
+    const tW = duration * 0.7, tB = duration * 0.3;
+    this._blastState = locked ? 'locking' : 'unlocking';
+    return this.ctx.clock.tween(tW, (e) => {
+      if (alive()) P.wheel.rotation.x = w0 + dir * e * Math.PI * 2.5;
+    }, 'inOut').then(() => {
+      const b0 = P.bolts.position.z;
+      return this.ctx.clock.tween(tB, (e) => { if (alive()) P.bolts.position.z = b0 + (b1 - b0) * e; }, 'inOut');
+    }).then(() => { if (alive()) this._blastState = locked ? 'locked' : 'unlocked'; });
+  }
+  /** 防爆門目前是否鎖死（鎖栓推出、門關著）。 */
+  get blastLocked() { return this._blastState === 'locked'; }
+
   /** 濃煙（0..1）：從防爆門湧入、翻滾著充滿房間的煙霧粒子，並讓室內燈光被煙吞沒變暗。
    *  scene.fog 由 states/common.js 統一管理：它會讀取 this.smokeLevel（目前平滑後的值 0..1）把霧轉黑轉濃。 */
   setSmoke(amount, { duration = 4 } = {}) { this._f.smoke.set(clamp(amount), duration, this.ctx.clock.time); }
@@ -736,8 +777,18 @@ export class ControlRoom {
     const live = 1 - b;
     this.leds.update(t, { mains: power, ups: 1, upsAlarm: 1 - power }, live, reduce);
     // CAM 頻道指示
-    const ch = this.ctx.feeds?.channel;
-    this.camLeds?.forEach((led, i) => led.set(LED_COLORS.green, (ch === i + 1 ? 1 : 0.0) * power * live));
+    const fd = this.ctx.feeds;
+    const ch = fd?.channel;
+    // 有未查看的動態偵測：綠（目前頻道）→ 琥珀交叉淡化（alertLevel 已平滑約 0.6 秒），琥珀緩慢呼吸 ≤ 15%
+    const camBreath = reduce ? CAM_LED.steady : breathe(t, CAM_LED.period, CAM_LED.depth);
+    this.camLeds?.forEach((led, i) => {
+      const sel = ch === i + 1 ? 1 : 0;
+      const al = clamp(Number(fd?.alertLevel?.(i + 1)) || 0);
+      _tmpC.copy(LED_COLORS.green).multiplyScalar(sel * (1 - al));
+      _tmpL.copy(LED_COLORS.amber).multiplyScalar(al * camBreath);
+      _tmpC.add(_tmpL).multiplyScalar(power * live);
+      led.setColor(_tmpC, 0.35 + (CAM_LED.glow - 0.35) * al);
+    });
     // 對講機
     let icK = 0, icC = LED_COLORS.amber;
     if (this._intercomMode === 'ringing') icK = 0.12 + 0.88 * (0.5 - 0.5 * Math.cos((t * Math.PI * 2) / 1.2));
@@ -772,9 +823,12 @@ export class ControlRoom {
     this.parts.flashlight?.led.set(flOn ? LED_COLORS.green : LED_COLORS.amber, (flOn ? 0.9 : 0.0) * live);
     // 防爆門狀態燈
     let bk = 0.85, bc = LED_COLORS.red;
-    if (this._blastState === 'opening') { bc = LED_COLORS.amber; bk = 0.35 + 0.65 * (0.5 - 0.5 * Math.cos((t * Math.PI * 2) / 1.4)); }
-    else if (this._blastState === 'open') { bc = LED_COLORS.amber; bk = 0.5; }
-    this._blastLampCol.lerp(_tmpC.copy(bc).multiplyScalar(bk * live), 1 - Math.exp(-8 * dt));
+    const bs = this._blastState;
+    if (bs === 'opening') { bc = LED_COLORS.amber; bk = reduce ? 0.6 : 0.35 + 0.65 * (0.5 - 0.5 * Math.cos((t * Math.PI * 2) / 1.4)); }
+    else if (bs === 'open') { bc = LED_COLORS.amber; bk = 0.5; }
+    else if (bs === 'unlocked') { bc = LED_COLORS.green; bk = BLAST_LAMP.unlocked; }
+    else if (bs === 'locking' || bs === 'unlocking') { bc = LED_COLORS.amber; bk = reduce ? BLAST_LAMP.steady : BLAST_LAMP.level * breathe(t, BLAST_LAMP.period, BLAST_LAMP.depth); }
+    this._blastLampCol.lerp(_tmpC.copy(bc).multiplyScalar(bk * live), 1 - Math.exp(-BLAST_LAMP.lerp * dt));
     this._applyLed(this.parts.blast.lamp, this._blastLampCol, 0.6);
     // 解鎖鈕呼吸紅光（週期 2.4 秒）
     const ug = f.unlock.update(now);

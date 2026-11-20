@@ -3,6 +3,8 @@
 // 兩張畫布輪替（cur / prev），讓切換頻道或模式時舊字能與新字交叉淡化。
 //   左上：CAM-0n 地點　右上：REC（圓點由 CRT shader 畫）＋時間戳 HH:MM:SS　左下：狀態標籤
 //   STATIC：中央 SCRIPT.status.noSignal　BOOT：中央 SCRIPT.status.bandwidth
+//   動態偵測（LD）：tag「▲ 動態偵測 HH:MM:SS」在 CAM id 下方；alarm「▲ CAM-0n」在時間戳下方（靠右）；
+//   recOff：REC 圓點關閉（時間停住的頻道；圓點的淡出由 CameraFeeds 以 uRec.w 處理）
 // =============================================================================
 import * as THREE from 'three';
 import { makeCanvas, fitText, FONTS } from '../../gfx/canvasUtil.js';
@@ -29,7 +31,7 @@ export class OSD {
   swap() { this.cur = 1 - this.cur; this.layers[this.cur].key = ''; }
 
   /**
-   * state: { kind: 'feed'|'static'|'boot'|'none', hd, camId, place, label, time, center }
+   * state: { kind: 'feed'|'static'|'boot'|'none', hd, camId, place, label, time, center, tag?, alarm?, recOff? }
    * 回傳 true 表示有重畫。
    */
   draw(state) {
@@ -69,8 +71,11 @@ export class OSD {
       g.font = `bold 22px ${FONTS.mono}`;
       const recW = g.measureText('REC').width;
       const dotX = W - mx - recW - 15, dotY = my - 8;
-      this.rec = { u: dotX / W, v: 1 - dotY / H, r: 7.5 / H };
+      this.rec = { u: dotX / W, v: 1 - dotY / H, r: 7.5 / H, on: !state.recOff };
       shadowText(state.time, W - mx, my + 30, { size: 21, align: 'right', weight: '' });
+      // 動態偵測：被警示頻道的標籤（CAM id 下方）、其他被警示頻道的警示列（時間戳下方）
+      if (state.tag) shadowText(state.tag, mx, my + 30, { size: 19, font: FONTS.ui, weight: '' });
+      if (state.alarm) shadowText(state.alarm, W - mx, my + 58, { size: 18, align: 'right', weight: '' });
       // 左下：狀態標籤
       const labelColor = state.hd ? (state.warn ? '#ffc27a' : '#f2f2ea') : '#f2f2ea';
       shadowText(state.label, mx, H - my + 14, { size: 19, font: FONTS.ui, maxW: W - mx * 2, color: labelColor, weight: '' });

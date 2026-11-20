@@ -37,6 +37,19 @@
 //   feeds.screenLightGain      螢幕光強度倍率（預設 1）
 //   feeds.brightness           主螢幕＋側螢幕整體亮度倍率（預設 1，平滑套用）
 //   feeds.debugBlit(renderer, { crt = true })  把目前頻道（經過 / 不經過 CRT）畫滿畫面（截圖測試用）
+// -----------------------------------------------------------------------------
+// 動態偵測（VMD）與盲區微事件（docs/pacing/spec.md §3.2 / §7.2；只在 LD 模式）：
+//   feeds.shownChannel                 實際呈現中的頻道（切換過場結束前可能 ≠ channel）
+//   feeds.raiseAlert(n, { stamp })     n 頻道動態偵測警示（stamp 預設 clockStamp()）→ stamp；emit 'feeds:alert' { channel, stamp }
+//   feeds.alerts / isAlerted(n) / alertLevel(n)（平滑 0..1，控制台 CAM 按鈕琥珀燈用）/ clearAlerts()
+//     確認（ack）：isChannelObserved(n) 連續 1.0 秒 → 刪除警示、emit 'feeds:alertAck' { channel }
+//     OSD：被警示頻道切入時在 CAM id 下方鎖定「▲ 動態偵測 HH:MM:SS」（離開該頻道才清除）；
+//          目前畫面的時間戳下方列出其他被警示的頻道「▲ CAM-0n」
+//   feeds.setAnomalyStage(n, k, { force }) → bool   盲區守門：LD 下顯示中的頻道（CAM-03：顯示中且被注視）拒絕
+//   feeds.anomalyStage(n)、feeds.setFrozenTime(n, text|null)（OSD 時間停住、REC 圓點淡出）、feeds.clockStamp()
+//   feeds.subPoses（預設 true）/ feeds.figureSub：上限內被看過又移開時的「微姿勢」（每個 index 最多一次，index ≤ 5）
+//     emit 'feeds:figureMoved' { index, sub }
+// 時間戳秒數：ctx.flags.minuteK（0..0.999，MonitoringDirector 發布）存在時用 floor(60·k)，否則照舊依 secondsPerMinute 推算。
 // =============================================================================
 import * as THREE from 'three';
 import { createCRTMaterial, CRT_MODE, syncToneUniforms } from '../gfx/shaders/CRTShader.js';
@@ -61,6 +74,17 @@ const FEED_MEAN = { LD: { 1: 51, 2: 31, 3: 25, 4: 40 }, HD: { 1: 23, 2: 26, 3: 2
 // 再用 AGC_DUR 慢慢回到自己的亮度（像監視器的自動曝光）。AGC 只乘在畫面內容上（OSD 不受影響）。
 const FEED_LUM = { LD: { 1: 0.0281, 2: 0.0197, 3: 0.0104, 4: 0.0280 }, HD: { 1: 0.0085, 2: 0.0096, 3: 0.0115, 4: 0.0198 } };
 const AGC_MIN = 0.35, AGC_MAX = 2.8;   // 表是實測的，範圍只是防呆（CAM-03 與 CAM-01/04 相差約 2.7 倍）
+// 動態偵測（spec §3.2 / §4 PACE.ACK）
+const ACK_TIME = 1.0;           // 被注視連續 1.0 秒 = 已查看
+const ALERT_LAMBDA = 4;         // alertLevel 平滑（約 0.6 秒淡入/淡出）
+const REC_LAMBDA = 5;           // 時間停住的頻道：REC 圓點約 0.6 秒淡出
+const SUBPOSE_MAX = 5;          // = Figure.LD_SUBPOSE_MAX（spec §7.1）：index 6、7 沒有微姿勢
+const CHS = [1, 2, 3, 4];
+// SCRIPT.feedUI 尚未載入時的後備文字（與 script.js 的【補充文案】feedUI 相同）
+const FEED_UI_FALLBACK = {
+  motionTag: (stamp) => `▲ 動態偵測 ${stamp}`,
+  alarmLine: (chs) => `▲ ${chs.map((n) => `CAM-0${n}`).join(' ')}`,
+};
 
 export class CameraFeeds {
   constructor(ctx) {
@@ -81,8 +105,23 @@ export class CameraFeeds {
     this._bright = 1;
     this._hdObs = { 1: 0, 2: 0, 3: 0, 4: 0 };
 
+    // ---- 動態偵測 / 盲區微事件 ----
+    /** n → { stamp, t0, obs }：尚未查看的動態偵測警示 */
+    this.alerts = {};
+    this._alertLvl = { 1: 0, 2: 0, 3: 0, 4: 0 };
+    this._frozen = {};          // n → 停住的 OSD 時間文字
+    this._recK = { 1: 1, 2: 1, 3: 1, 4: 1 };
+    this._tagShown = null;      // { channel, stamp }：目前畫面鎖定的動態偵測標籤
+    this._stageFallback = {};   // 頻道尚未提供 setStage 時記錄要求的階段
+    this._guardWarnAt = -1e9;
+    /** 上限內的「微姿勢」（spec §3.4）；?subposes=0 由 MonitoringState 關閉 */
+    this.subPoses = true;
+    this.figureSub = false;
+    this._shownSub = false;
+    this._kStale = false;
+
     // ---- 頻道場景 ----
-    this.channels = createChannels();
+    this.channels = createChannels(ctx.SCRIPT);
     this.figure = this.channels[3].figure;
     this.figure.onAxeHit = () => this.ctx.bus.emit('feeds:axeHit', {});
     for (const ch of Object.values(this.channels)) ch.setVariant('LD');
@@ -199,6 +238,7 @@ export class CameraFeeds {
   /** 直接設定人影位置（跳關/重置用）。 */
   setFigureIndex(i) {
     this.figureIndex = clamp(Math.round(Number(i) || 0), 0, FIGURE_STEPS - 1);
+    this.figureSub = false;
     this.seenSinceMove = false;
     this.unobservedTime = 0;
     this._applyFigure();
@@ -212,6 +252,71 @@ export class CameraFeeds {
   }
   /** 目前主螢幕是否被玩家看著且正顯示頻道 n（LD 或 HD）。 */
   isChannelObserved(n) { return (this.mode === 'LD' || this.mode === 'HD') && this.channel === n && !!this.ctx.gaze?.mainScreenObserved; }
+
+  // ---------------------------------------------------------------------------
+  // 動態偵測（VMD）／盲區微事件 API（spec §7.2）
+  // ---------------------------------------------------------------------------
+  /** 實際呈現中的頻道（切換過場還沒開始/結束時可能與 channel 不同）。 */
+  get shownChannel() { return this._shownChannel; }
+
+  /** n 頻道的動態偵測警示（只在 LD）。已有警示時更新 stamp。@returns {string|null} stamp */
+  raiseAlert(n, { stamp } = {}) {
+    n = Math.round(Number(n));
+    if (!CHS.includes(n) || this.mode !== 'LD') return null;
+    const s = typeof stamp === 'string' && stamp ? stamp : this.clockStamp();
+    const prev = this.alerts[n];
+    if (prev) prev.stamp = s;
+    else this.alerts[n] = { stamp: s, t0: this.ctx.clock?.time ?? this._t, obs: 0 };
+    // 顯示中但沒被看著（實際上是玩家走到牆邊時的 CAM-03）：標籤立刻出現在畫面上
+    if (n === this._shownChannel && this._shownMode === 'LD' && !this.isChannelObserved(n)) this._tagShown = { channel: n, stamp: s };
+    this.ctx.bus.emit('feeds:alert', { channel: n, stamp: s });
+    return s;
+  }
+  isAlerted(n) { return !!this.alerts[n]; }
+  /** 平滑後的警示程度 0..1（控制台 CAM 按鈕燈用；約 0.6 秒淡入淡出）。 */
+  alertLevel(n) { return this._alertLvl[n] || 0; }
+  /** 清除全部警示（標籤保留到切走為止；離開 LD 時另外清除）。 */
+  clearAlerts() { this.alerts = {}; }
+
+  /**
+   * 盲區微事件：把 n 頻道的 LD 佈置設成第 k 階段（channels[n].setStage，冪等、絕對）。
+   * 守門：LD 模式下，CAM-01/02/04 只要正在顯示（channel 或 shownChannel）就拒絕；
+   *       CAM-03 在顯示中且主螢幕被注視時拒絕。force = true（跳關/除錯）略過守門。
+   * @returns {boolean} 是否套用
+   */
+  setAnomalyStage(n, k, { force = false } = {}) {
+    n = Math.round(Number(n));
+    const ch = this.channels[n];
+    if (!ch) return false;
+    const shown = n === this.channel || n === this._shownChannel;
+    if (!force && this.mode === 'LD') {
+      const refuse = n === 3 ? shown && !!this.ctx.gaze?.mainScreenObserved : shown;
+      if (refuse) {
+        const now = this.ctx.clock?.time ?? this._t;
+        if (now - this._guardWarnAt > 2) { this._guardWarnAt = now; console.warn(`[feeds] setAnomalyStage(${n}, ${k}) refused: channel is on screen`); }
+        return false;
+      }
+    }
+    const kk = Math.max(0, Math.round(Number(k) || 0));
+    if (typeof ch.setStage === 'function') ch.setStage(kk);
+    else this._stageFallback[n] = kk;
+    if (n === this._shownChannel) this._needRender = true;
+    return true;
+  }
+  anomalyStage(n) {
+    const ch = this.channels[n];
+    if (!ch) return 0;
+    return Number.isFinite(ch.stage) ? ch.stage : (this._stageFallback[n] || 0);
+  }
+  /** n 頻道的 OSD 時間停在 text（null = 恢復走動）；REC 圓點約 0.6 秒淡出。 */
+  setFrozenTime(n, text) {
+    n = Math.round(Number(n));
+    if (!CHS.includes(n)) return;
+    if (text == null || text === '') delete this._frozen[n];
+    else this._frozen[n] = String(text);
+  }
+  /** 房間時鐘的 HH:MM:SS（秒數依 flags.minuteK；與 OSD 時間戳相同）。 */
+  clockStamp() { return this._timestamp(this.ctx.clock?.time ?? this._t); }
   /** 重置（循環重來）：頻道 3、人影 index 0、hdSeen 清空、模式 LD。 */
   reset() {
     this._bootToken++;
@@ -224,6 +329,13 @@ export class CameraFeeds {
     for (const ch of Object.values(this.channels)) ch.setVariant('LD');
     for (const s of this.sideScreens) s.snow = 0;
     this.figure.setAction(false);
+    // 盲區微事件全部回到初始
+    for (const [n, ch] of Object.entries(this.channels)) { if (typeof ch.setStage === 'function') ch.setStage(0); delete this._stageFallback[n]; }
+    this.clearAlerts();
+    this._frozen = {};
+    this._tagShown = null;
+    this.figureSub = false;
+    for (const c of CHS) { this._alertLvl[c] = 0; this._recK[c] = 1; }
     this._applyFigure();
     this.osd.swap();
     this._needRender = true;
@@ -239,12 +351,20 @@ export class CameraFeeds {
 
   _applyFigure() {
     this._shownIndex = this.figureIndex;
-    this.channels[3].setFigurePose(this.figureIndex);
+    this._shownSub = this.figureSub;
+    this.channels[3].setFigurePose(this.figureIndex, this.figureSub);
     this._needRender = true;
+  }
+  /** 頻道的 LD 畫面平均亮度倍率（盲區微事件把畫面變暗時，AGC 與模式淡化依此調整）。 */
+  _ms(n) {
+    const s = Number(this.channels[n]?.meanScale);
+    return Number.isFinite(s) && s > 0 ? s : 1;
   }
 
   _beginMode(m) {
     const prev = this._shownMode;
+    // 離開 LD（停電雪花、HD 開機…）：動態偵測警示、標籤、停住的時間全部清除
+    if (m !== 'LD') { this.clearAlerts(); this._frozen = {}; this._tagShown = null; }
     this._prevMode = prev;
     this._prevExposure = this._exposureFor(this._shownChannel, prev);
     this._prevAgc = this._agc;
@@ -273,7 +393,7 @@ export class CameraFeeds {
 
   /** 模式/頻道在 CRT 上的大約平均亮度（sRGB 0–255） */
   _meanOf(mode, ch) {
-    if (mode === 'LD') return FEED_MEAN.LD[ch] || 30;
+    if (mode === 'LD') return (FEED_MEAN.LD[ch] || 30) * this._ms(ch);
     if (mode === 'HD') return FEED_MEAN.HD[ch] || 28;
     if (mode === 'STATIC') return 66;
     return 9;   // OFF / BOOT（開機由暗開始）
@@ -286,12 +406,17 @@ export class CameraFeeds {
     // 自動增益：新畫面先以舊畫面的平均亮度出現，再緩慢回到自己的亮度
     const v = this._shownMode === 'LD' ? 'LD' : (this._shownMode === 'HD' || this._shownMode === 'BOOT') ? 'HD' : null;
     if (v) {
-      const a = FEED_LUM[v][this._shownChannel] || 0.03, b = FEED_LUM[v][n] || 0.03;
+      // LD：乘上各頻道目前盲區階段的畫面亮度倍率（變暗的階段切入時一樣由舊畫面的亮度慢慢回到自己的亮度）
+      const ms = v === 'LD' ? (c) => this._ms(c) : () => 1;
+      const a = (FEED_LUM[v][this._shownChannel] || 0.03) * ms(this._shownChannel), b = (FEED_LUM[v][n] || 0.03) * ms(n);
       this._agcFrom = clamp(this._agc * (a / b), AGC_MIN, AGC_MAX);
       this._agcT = 0;
       this._agc = this._agcFrom;
     }
     this._shownChannel = n;
+    // 動態偵測標籤：切入被警示的頻道時鎖定（整段停留期間保留），切走即清除
+    const al = this.alerts[n];
+    this._tagShown = al && this._shownMode === 'LD' ? { channel: n, stamp: al.stamp } : null;
     if (showsFeed && this._modeMix >= 1) {
       this._swapTargets();
       this.osd.swap();
@@ -318,10 +443,49 @@ export class CameraFeeds {
         && this.figureIndex < this.limits.max
         && this.figureIndex < FIGURE_STEPS - 1) {
       this.figureIndex++;
+      this.figureSub = false;
       this.seenSinceMove = false;
       this.unobservedTime = 0;
       this._applyFigure();
-      this.ctx.bus.emit('feeds:figureMoved', { index: this.figureIndex });
+      this.ctx.bus.emit('feeds:figureMoved', { index: this.figureIndex, sub: false });
+    } else if (this.subPoses && this.mode === 'LD'
+        && this.unobservedTime >= 0.5
+        && this.seenSinceMove
+        && this.figureIndex >= this.limits.max
+        && !this.figureSub
+        && this.figureIndex <= SUBPOSE_MAX) {
+      // 上限內的回報：看過之後移開，他在原地換了一個細微的姿勢（每個 index 最多一次；不轉向鏡頭）
+      this.figureSub = true;
+      this.seenSinceMove = false;
+      this.unobservedTime = 0;
+      this._applyFigure();
+      this.ctx.bus.emit('feeds:figureMoved', { index: this.figureIndex, sub: true });
+    }
+  }
+
+  /** 動態偵測：注視確認（ack）、警示燈平滑、REC 圓點淡出、顯示中但沒被看著的頻道標籤。 */
+  _alertTick(dt) {
+    for (const key of Object.keys(this.alerts)) {
+      const n = Number(key), a = this.alerts[n];
+      if (!a) continue;
+      if (this._shownMode === 'LD' && this._shownChannel === n && this.isChannelObserved(n)) {
+        a.obs += dt;
+        if (a.obs >= ACK_TIME) {
+          delete this.alerts[n];
+          this.ctx.bus.emit('feeds:alertAck', { channel: n });
+        }
+      } else a.obs = 0;
+    }
+    for (const c of CHS) {
+      this._alertLvl[c] = damp(this._alertLvl[c], this.alerts[c] ? 1 : 0, ALERT_LAMBDA, dt);
+      if (this._alertLvl[c] < 1e-4) this._alertLvl[c] = 0;
+      this._recK[c] = damp(this._recK[c], this._frozen[c] ? 0 : 1, REC_LAMBDA, dt);
+    }
+    // 顯示中、被警示、但玩家沒在看（走到牆邊時的 CAM-03）：標籤跟著最新的偵測時間
+    const n = this._shownChannel, a = this.alerts[n];
+    if (a && this._shownMode === 'LD' && this.channel === n && !this.isChannelObserved(n)
+        && (!this._tagShown || this._tagShown.channel !== n || this._tagShown.stamp !== a.stamp)) {
+      this._tagShown = { channel: n, stamp: a.stamp };
     }
   }
 
@@ -337,11 +501,20 @@ export class CameraFeeds {
 
   _timestamp(t) {
     const text = this.ctx.flags?.clockText || this.ctx.CLOCK?.start || '02:00';
-    if (text !== this._clockText) { this._clockText = text; this._clockAt = t; }
-    const spm = this.ctx.CLOCK?.secondsPerMinute || 17;
-    const sec = Math.min(59, Math.floor(((t - this._clockAt) * 60) / spm));
-    return `${text}:${String(Math.max(0, sec)).padStart(2, '0')}`;
+    if (text !== this._clockText) { this._clockText = text; this._clockAt = t; this._kStale = true; }
+    const k = this.ctx.flags?.minuteK;
+    let sec;
+    if (Number.isFinite(k)) {
+      // 分鐘剛翻頁、director 還沒把 k 歸零的那一幀：秒數先停在 :00（秒數永遠不倒退）
+      if (this._kStale && k < 0.5) this._kStale = false;
+      sec = this._kStale ? 0 : Math.floor(60 * clamp(k, 0, 0.999));
+    } else {
+      const spm = this.ctx.CLOCK?.secondsPerMinute || 17;
+      sec = Math.floor(((t - this._clockAt) * 60) / spm);
+    }
+    return `${text}:${String(clamp(sec, 0, 59)).padStart(2, '0')}`;
   }
+  _feedUI() { return this.ctx.SCRIPT?.feedUI || FEED_UI_FALLBACK; }
 
   _updateOSD(t) {
     const m = this._shownMode;
@@ -351,7 +524,16 @@ export class CameraFeeds {
     if (m === 'LD' || m === 'HD' || (m === 'BOOT' && this._boot >= 0.8)) {
       const hd = m !== 'LD';
       const label = hd ? cam.hd : cam.ld;
-      state = { kind: 'feed', hd, camId: cam.id, place: cam.place, label, warn: label.includes('警告'), time: this._timestamp(t) };
+      const time = this._timestamp(t);
+      state = { kind: 'feed', hd, camId: cam.id, place: cam.place, label, warn: label.includes('警告'), time };
+      if (m === 'LD') {
+        const n = this._shownChannel, UI = this._feedUI();
+        const frozen = this._frozen[n];
+        if (frozen) { state.time = frozen; state.recOff = true; }
+        if (this._tagShown && this._tagShown.channel === n) state.tag = (UI.motionTag || FEED_UI_FALLBACK.motionTag)(this._tagShown.stamp);
+        const others = CHS.filter((c) => c !== n && this.alerts[c]);
+        if (others.length) state.alarm = (UI.alarmLine || FEED_UI_FALLBACK.alarmLine)(others);
+      }
       if (m === 'BOOT') on = smoothstep(0.84, 1.0, this._boot);
     } else if (m === 'BOOT') {
       state = { kind: 'boot', center: S.bandwidth };
@@ -394,10 +576,11 @@ export class CameraFeeds {
     if (this.mode !== this._shownMode) this._beginMode(this.mode);
     // 切換過場還沒結束時不接新的切換（連按按鈕只會在前一次過場結束後切到最後選的頻道，不會疊成閃爍）
     if (this.channel !== this._shownChannel && this._switch <= 0) this._beginSwitch(this.channel);
-    if (this.figureIndex !== this._shownIndex) this._applyFigure();
+    if (this.figureIndex !== this._shownIndex || this.figureSub !== this._shownSub) this._applyFigure();
 
-    // ---- 盲區規則、HD 注視 ----
+    // ---- 盲區規則、動態偵測確認、HD 注視 ----
     this._blindSpot(dt);
+    this._alertTick(dt);
     this._hdSeenTick(dt);
 
     // ---- 動畫（只有目前頻道的 HD 場景會動；人影的劈門動作無論顯示哪個頻道都會進行）----
@@ -440,7 +623,9 @@ export class CameraFeeds {
     u.uOSDOn.value = this._osdOn;
     u.uOSDPrevOn.value = this._osdPrevOn;
     const rec = this.osd.rec;
-    u.uRec.value.set(rec.u, rec.v, rec.r, rec.r > 0 ? 1 : 0);
+    // 時間停住的頻道 REC 圓點淡出（各頻道各自淡出；通常切入前就已經消失）
+    const recW = rec.r > 0 ? (this._shownMode === 'LD' ? this._recK[this._shownChannel] : 1) : 0;
+    u.uRec.value.set(rec.u, rec.v, rec.r, recW);
     u.uBrightness.value = this._bright;
 
     syncToneUniforms(this.crtMaterial, this.ctx.renderer);
