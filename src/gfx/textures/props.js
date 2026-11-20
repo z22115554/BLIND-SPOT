@@ -276,16 +276,23 @@ function plate(g, x, y, w, h, text, { size = h * 0.55, bg = '#1e211f', fg = '#eb
   if (rivets) for (const xx of [x + h * 0.22, x + w - h * 0.22]) rivet(g, xx, y + h / 2, Math.max(2.2, h * 0.08), { base: [140, 140, 136] });
 }
 
-/** LED 燈座（鍍鉻環＋未點亮的有色燈罩） */
-function ledBezel(g, x, y, r, tint) {
+/**
+ * LED 燈座（鍍鉻環＋有色燈罩）。dark = true：燈罩畫成「沒點亮」的深色（真正的 3D LED 會疊在上面，
+ * 貼圖本身不能看起來像亮著，否則會和 3D 指示燈的狀態矛盾）。
+ */
+function ledBezel(g, x, y, r, tint, { dark = false } = {}) {
   const rg = g.createRadialGradient(x - r * 0.4, y - r * 0.4, r * 0.2, x, y, r * 1.45);
   rg.addColorStop(0, '#f4f4f0'); rg.addColorStop(0.5, '#9a9c98'); rg.addColorStop(1, '#3a3c3a');
   g.fillStyle = 'rgba(0,0,0,0.45)'; g.beginPath(); g.arc(x + 2, y + 3, r * 1.45, 0, TAU); g.fill();
   g.fillStyle = rg; g.beginPath(); g.arc(x, y, r * 1.4, 0, TAU); g.fill();
   const lens = g.createRadialGradient(x - r * 0.3, y - r * 0.35, r * 0.1, x, y, r);
-  lens.addColorStop(0, rgba(tint.map((v) => Math.min(255, v * 0.9 + 60)))); lens.addColorStop(0.5, rgba(tint.map((v) => v * 0.45))); lens.addColorStop(1, rgba(tint.map((v) => v * 0.18)));
+  if (dark) {
+    lens.addColorStop(0, rgba(tint.map((v) => v * 0.28 + 14))); lens.addColorStop(0.6, rgba(tint.map((v) => v * 0.12 + 6))); lens.addColorStop(1, rgba(tint.map((v) => v * 0.05 + 4)));
+  } else {
+    lens.addColorStop(0, rgba(tint.map((v) => Math.min(255, v * 0.9 + 60)))); lens.addColorStop(0.5, rgba(tint.map((v) => v * 0.45))); lens.addColorStop(1, rgba(tint.map((v) => v * 0.18)));
+  }
   g.fillStyle = lens; g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill();
-  g.fillStyle = 'rgba(255,255,255,0.5)'; g.beginPath(); g.ellipse(x - r * 0.35, y - r * 0.4, r * 0.28, r * 0.16, -0.6, 0, TAU); g.fill();
+  g.fillStyle = `rgba(255,255,255,${dark ? 0.25 : 0.5})`; g.beginPath(); g.ellipse(x - r * 0.35, y - r * 0.4, r * 0.28, r * 0.16, -0.6, 0, TAU); g.fill();
 }
 
 function textAt(g, text, x, y, size, { color = '#1d1f1e', weight = '700', align = 'center', font = FONTS.ui, maxW = 1e4 } = {}) {
@@ -340,12 +347,13 @@ function ventPanel() {
   const gl = g.createLinearGradient(cx - R, cy - R, cx, cy);
   gl.addColorStop(0, 'rgba(255,255,255,0.22)'); gl.addColorStop(1, 'rgba(255,255,255,0)');
   g.fillStyle = gl; g.beginPath(); g.ellipse(cx - R * 0.25, cy - R * 0.35, R * 0.75, R * 0.45, -0.6, 0, TAU); g.fill();
-  plate(g, 146, 396, 220, 48, '主排風機', { size: 28 });
-  // 指示燈
+  plate(g, 146, 392, 220, 44, '主排風機', { size: 27 });
+  // 指示燈（燈罩畫成未點亮；3D LED 疊在上面）
+  const LY = 462;
   const leds = [[150, '運轉', [70, 200, 90]], [256, '異常', [235, 160, 40]], [362, '停止', [220, 50, 40]]];
-  for (const [x, lab, tint] of leds) { ledBezel(g, x, 482, 13, tint); textAt(g, lab, x, 518, 18, { color: '#121413' }); }
-  // 拉桿槽
-  const sx = 256, sy0 = 548, sy1 = 616;
+  for (const [x, lab, tint] of leds) { ledBezel(g, x, LY, 13, tint, { dark: true }); textAt(g, lab, x, LY + 30, 17, { color: '#121413' }); }
+  // 拉桿槽（放得比面板下緣高一些：3D 拉桿從槽中伸出，拉下時桿頭也還在面板內）
+  const sx = 256, sy0 = 516, sy1 = 568;
   g.fillStyle = '#2d302e'; roundRect(g, sx - 52, sy0 - 12, 104, sy1 - sy0 + 24, 8); g.fill();
   g.fillStyle = '#0b0c0b'; roundRect(g, sx - 9, sy0, 18, sy1 - sy0, 9); g.fill();
   g.strokeStyle = 'rgba(255,255,255,0.18)'; g.lineWidth = 1.5; roundRect(g, sx - 52, sy0 - 12, 104, sy1 - sy0 + 24, 8); g.stroke();
@@ -355,7 +363,7 @@ function ventPanel() {
   g.beginPath(); g.moveTo(sx - 80, sy0 + 8); g.lineTo(sx - 70, sy0 + 8); g.lineTo(sx - 70, sy1 - 18); g.lineTo(sx - 62, sy1 - 18); g.lineTo(sx - 75, sy1 - 2); g.lineTo(sx - 88, sy1 - 18); g.lineTo(sx - 80, sy1 - 18); g.closePath(); g.fill();
   textAt(g, '拉下', sx - 120, (sy0 + sy1) / 2, 15, { color: '#121413' });
   // 小貼紙
-  g.save(); g.translate(430, 566); g.rotate(0.04);
+  g.save(); g.translate(432, 586); g.rotate(0.04);
   g.fillStyle = '#e4bf2c'; g.fillRect(-36, -20, 72, 40);
   textAt(g, '非經授權', 0, -8, 12, { color: '#1a1a1a' }); textAt(g, '請勿操作', 0, 9, 12, { color: '#1a1a1a' });
   g.restore();
@@ -364,14 +372,16 @@ function ventPanel() {
     canvas,
     layout: {
       gauge: { u: cx / W, v: 1 - cy / H, r: R / W, minDeg: -135, maxDeg: 135, max: MAX, green: [900, 1350], amber: [1350, 1600], red: [1600, 1800] },
-      leds: leds.map(([x, label, c]) => ({ u: x / W, v: 1 - 482 / H, r: 13 / W, label, color: c })),
+      leds: leds.map(([x, label, c]) => ({ u: x / W, v: 1 - LY / H, r: 13 / W, label, color: c })),
       lever: { u: sx / W, vTop: 1 - sy0 / H, vBottom: 1 - sy1 / H },
     },
   };
 }
 
+// 384×544（與 3D 面板 0.24×0.34 m 同比例，圓形不會被拉扁）；喇叭格柵、通話燈座、通話鍵凹座的位置
+// 由 layout 交給 buildIntercom，3D 按鍵/LED/格柵外圈都對齊這裡畫的位置（每樣東西只有一個）。
 function intercomPanel() {
-  const W = 384, H = 512;
+  const W = 384, H = 544;
   const { canvas, g } = panelBase(W, H, [176, 172, 160], { seed: 411 });
   // 紅色頂帶
   g.fillStyle = '#a52a22'; g.fillRect(14, 26, W - 28, 78);
@@ -389,7 +399,7 @@ function intercomPanel() {
   g.restore();
   textAt(g, '緊急對講', 222, 66, 44, { color: '#f7f1e8', weight: '900', maxW: 230 });
   // 喇叭格柵
-  const cx = W / 2, cy = 210, R = 84;
+  const cx = W / 2, cy = 218, R = 84;
   g.fillStyle = 'rgba(0,0,0,0.3)'; g.beginPath(); g.arc(cx + 2, cy + 3, R + 10, 0, TAU); g.fill();
   g.fillStyle = '#8f8c82'; g.beginPath(); g.arc(cx, cy, R + 9, 0, TAU); g.fill();
   g.fillStyle = '#b9b5a8'; g.beginPath(); g.arc(cx, cy, R + 4, 0, TAU); g.fill();
@@ -400,23 +410,24 @@ function intercomPanel() {
     g.fillStyle = 'rgba(255,255,255,0.35)'; g.beginPath(); g.arc(x + 0.8, y + 1, 3.6, 0, TAU); g.fill();
     g.fillStyle = '#0d0d0c'; g.beginPath(); g.arc(x, y, 3.4, 0, TAU); g.fill();
   }
-  // 通話燈與通話鍵
-  ledBezel(g, 104, 352, 12, [70, 200, 90]);
-  textAt(g, '通話燈', 104, 388, 18);
-  const bx = 262, by = 352, br = 40;
+  // 通話燈（燈罩畫成未點亮；3D LED 疊在上面）與通話鍵凹座（3D 按鍵嵌在裡面）
+  const lx = 104, ly = 372, lr = 12;
+  ledBezel(g, lx, ly, lr, [70, 200, 90], { dark: true });
+  textAt(g, '通話燈', lx, ly + 38, 18);
+  const bx = 262, by = 372, br = 40;
   g.fillStyle = 'rgba(0,0,0,0.4)'; g.beginPath(); g.arc(bx + 2, by + 4, br + 10, 0, TAU); g.fill();
   const rg = g.createLinearGradient(bx - br, by - br, bx + br, by + br);
   rg.addColorStop(0, '#dcdcd6'); rg.addColorStop(1, '#4a4c48');
   g.fillStyle = rg; g.beginPath(); g.arc(bx, by, br + 9, 0, TAU); g.fill();
   g.fillStyle = '#1b1c1b'; g.beginPath(); g.arc(bx, by, br + 2, 0, TAU); g.fill();
   textAt(g, '通話', bx, by + br + 30, 24, { weight: '900' });
-  plate(g, 34, 446, W - 68, 40, '連線：B區 公務維修廊道', { size: 19 });
+  plate(g, 34, 478, W - 68, 40, '連線：B區 公務維修廊道', { size: 19 });
   return {
     canvas,
     layout: {
-      speaker: { u: cx / W, v: 1 - cy / H, r: R / W },
-      led: { u: 104 / W, v: 1 - 352 / H, r: 12 / W },
-      button: { u: bx / W, v: 1 - by / H, r: br / W },
+      speaker: { u: cx / W, v: 1 - cy / H, r: R / W, rim: (R + 9) / W },
+      led: { u: lx / W, v: 1 - ly / H, r: lr / W },
+      button: { u: bx / W, v: 1 - by / H, r: br / W, well: (br + 2) / W },
     },
   };
 }

@@ -49,6 +49,8 @@ const FinalShader = {
     uTint: { value: new THREE.Color(1, 1, 1) },
     uExposure: { value: 1 },
     uSmokeColor: { value: new THREE.Color(0.044, 0.036, 0.028) },
+    uSmokeView: { value: new THREE.Vector2(0, 0) },
+    uSmokeMax: { value: 0.6 },
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -74,6 +76,8 @@ const FinalShader = {
     uniform vec3 uTint;
     uniform float uExposure;
     uniform vec3 uSmokeColor;
+    uniform vec2 uSmokeView;
+    uniform float uSmokeMax;
     varying vec2 vUv;
 
     float hash12(vec2 p) {
@@ -130,15 +134,17 @@ const FinalShader = {
       // ---- 去飽和 ----
       col = mix(col, vec3(luma(col)), clamp(uDesat, 0.0, 1.0));
 
-      // ---- 濃煙：褐灰煙霾＋低頻雜訊緩慢飄移（上方較濃）----
+      // ---- 濃煙：被照亮的煙霾＋低頻雜訊緩慢飄移（上方較濃）----
+      // 雜訊座標跟著視線方向位移（uSmokeView = 相機 yaw/pitch 換算的畫面位移）：轉頭時煙霾像掛在世界裡，不是貼在螢幕上。
+      // 最大混合量 uSmokeMax（預設 0.6）：房間輪廓永遠透得出來；全黑由 fade 負責。
       if (uSmoke > 0.001) {
-        vec2 sp = vec2(d.x * aspect, d.y) * 1.7;
-        float n = vnoise(sp * 1.25 + vec2(uTime * 0.031, -uTime * 0.052)) * 0.62
-                + vnoise(sp * 3.1 + vec2(-uTime * 0.047, -uTime * 0.083) + 7.3) * 0.38;
-        float dens = uSmoke * (0.7 + 0.6 * (n - 0.5) + 0.22 * uv.y);
-        vec3 haze = uSmokeColor * (0.5 + 0.9 * n) + soft * uTint * 0.3;   // 光源在煙裡暈開
-        col = mix(col, haze, clamp(dens, 0.0, 0.94));
-        col *= 1.0 - 0.42 * uSmoke;
+        vec2 sp = vec2(d.x * aspect, d.y) * 1.7 + uSmokeView;
+        float n = vnoise(sp * 1.1 + vec2(uTime * 0.031, -uTime * 0.052)) * 0.6
+                + vnoise(sp * 2.7 + vec2(-uTime * 0.047, -uTime * 0.083) + 7.3) * 0.4;
+        float dens = uSmoke * (0.62 + 0.95 * (n - 0.5) + 0.25 * uv.y);
+        vec3 haze = uSmokeColor * (0.4 + 1.2 * n) + soft * uTint * 0.3;   // 光源在煙裡暈開
+        col = mix(col, haze, clamp(dens, 0.0, uSmokeMax));
+        col *= 1.0 - 0.3 * uSmoke;
       }
 
       // ---- 檢視背景變暗：去飽和＋變暗 ----
@@ -285,6 +291,7 @@ export class PostFX {
     else if (p.tint != null) u.uTint.value.set(p.tint);
     u.uExposure.value = Math.max(0, Number(p.exposure ?? 1));
     u.uSmokeColor.value.copy(this.smokeColor);
+    if (smoke > 0.001) this._smokeView(u);
 
     // 相機若被替換（理論上不會），跟著更新
     this.renderPass.scene = scene;
@@ -297,5 +304,19 @@ export class PostFX {
       renderer.setRenderTarget(null);
       renderer.render(scene, camera);
     }
+  }
+
+  /** 濃煙雜訊的視線錨定：相機 yaw/pitch → 雜訊座標位移（與畫面內容的移動量相符）。 */
+  _smokeView(u) {
+    const cam = this.ctx.camera;
+    if (!cam) return;
+    const k = 1.7 / (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov || 70) / 2));
+    // yaw 會在 ±π 處折返：累加成連續角度，避免雜訊圖樣跳動
+    const y = cam.rotation.y;
+    if (this._svYaw == null) { this._svYaw = y; this._svAcc = y; }
+    let dy = y - this._svYaw;
+    dy -= Math.round(dy / (Math.PI * 2)) * Math.PI * 2;
+    this._svYaw = y; this._svAcc += dy;
+    u.uSmokeView.value.set(-this._svAcc * k, cam.rotation.x * k);
   }
 }

@@ -392,7 +392,8 @@ function buildMug(room) {
   const ringG = new THREE.PlaneGeometry(0.12, 0.12); ringG.rotateX(-Math.PI / 2);
   const rings = ringMats.map((m, i) => {
     const r = new THREE.Mesh(ringG, m);
-    r.position.set(c.x - 0.075 + i * 0.02, c.y + 0.0012, c.z + 0.035 + i * 0.04);
+    // 漬痕在杯子右前方（左邊緊貼鍵盤）
+    r.position.set(c.x + 0.035 + i * 0.02, c.y + 0.0012, c.z + 0.03 + i * 0.035);
     r.rotation.y = i * 1.3; r.visible = false;
     group.add(noRaycast(r));
     return r;

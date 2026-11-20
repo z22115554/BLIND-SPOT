@@ -313,24 +313,36 @@ function buildIntercom(room) {
   root.rotation.y = Math.PI / 2;
   const b = new Batcher(UVS);
   b.rbox('panelGrey', 0.26, 0.36, 0.05, 0.008, 0, 0, -0.005);
-  b.box('consoleDark', 0.17, 0.11, 0.004, 0, 0.07, 0.022);
-  for (let k = 0; k < 7; k++) b.box('darkMetal', 0.15, 0.006, 0.006, 0, 0.025 + k * 0.0145, 0.027);
-  b.cyl('chrome', 0.031, 0.031, 0.01, 0, -0.07, 0.025, { rx: Math.PI / 2 }, 24);
   for (const [x, y] of [[-0.11, 0.16], [0.11, 0.16], [-0.11, -0.16], [0.11, -0.16]]) b.cyl('chrome', 0.006, 0.006, 0.004, x, y, 0.021, { rx: Math.PI / 2 }, 8);
   b.build((k) => mats.get(k), root, { name: 'intercom' });
-  const face = new THREE.Mesh(new THREE.PlaneGeometry(0.24, 0.34), mats.make({ map: room.tex.panel('intercom'), roughness: 0.55, transparent: false }, 'cr:intercomFace'));
-  face.position.z = 0.0205;
+  // 面板圖（紅色頂帶、「緊急對講」、喇叭格柵、通話燈座、通話鍵凹座、標籤）：3D 零件全部依它的 layout 對位
+  const FW = 0.24, FH = 0.34, FZ = 0.0205;
+  const tex = room.tex.panel('intercom');
+  const lay = tex.userData?.layout || {};
+  const at = (o, dz = 0) => new THREE.Vector3((o.u - 0.5) * FW, (o.v - 0.5) * FH, FZ + dz);
+  const face = new THREE.Mesh(new THREE.PlaneGeometry(FW, FH), mats.make({ map: tex, roughness: 0.55, transparent: false }, 'cr:intercomFace'));
+  face.position.z = FZ;
   root.add(face);
-  // 按鈕＋發光環
-  const btn = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.014, 20), mats.get('greyPlastic'));
-  btn.rotation.x = Math.PI / 2; btn.position.set(0, -0.07, 0.032);
+  // 喇叭格柵外圈：一圈微微凸起的鍍鉻環，只框住印好的格柵（不蓋住任何字）
+  const sp = lay.speaker || { u: 0.5, v: 1 - 218 / 544, r: 84 / 384, rim: 93 / 384 };
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(sp.rim * FW, 0.0021, 8, 56), mats.get('chrome'));
+  rim.position.copy(at(sp, 0.0008));
+  root.add(noRaycast(rim));
+  // 通話鍵（嵌在印好的凹座裡）＋凹座內的發光環
+  const bt = lay.button || { u: 262 / 384, v: 1 - 372 / 544, r: 40 / 384, well: 42 / 384 };
+  const btnR = bt.r * FW * 0.86;
+  const wellR = (bt.well ?? bt.r) * FW;
+  const btn = new THREE.Mesh(new THREE.CylinderGeometry(btnR, btnR, 0.012, 28), mats.get('greyPlastic'));
+  btn.rotation.x = Math.PI / 2; btn.position.copy(at(bt, 0.006));
   root.add(btn);
   room.intercomRingMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.0255, 0.0028, 8, 32), room.intercomRingMat);
-  ring.position.set(0, -0.07, 0.031);
+  const ring = new THREE.Mesh(new THREE.TorusGeometry((btnR + wellR) / 2, Math.max(0.0012, (wellR - btnR) * 0.42), 8, 40), room.intercomRingMat);
+  ring.position.copy(at(bt, 0.0012));
   root.add(noRaycast(ring));
-  const led = new SingleLed({ radius: 0.008, glowTex: room.glowTex, glowSize: 0.07 });
-  led.group.position.set(0.085, 0.145, 0.022);
+  // 通話燈：唯一的通話指示燈，坐在印好的（未點亮）燈座上
+  const ld = lay.led || { u: 104 / 384, v: 1 - 372 / 544, r: 12 / 384 };
+  const led = new SingleLed({ radius: ld.r * FW * 0.82, glowTex: room.glowTex, glowSize: 0.05 });
+  led.group.position.copy(at(ld, 0.0004));
   root.add(led.group);
   root.add(hitbox(0.3, 0.42, 0.08, 0, 0, 0.02));
   group.add(root);
@@ -340,6 +352,8 @@ function buildIntercom(room) {
 
 // ---------------------------------------------------------------------------
 // 通風控制面板（東牆，朝 -X）
+// 3D 轉速表指針/玻璃/鍍鉻外圈、三顆狀態燈（運轉/異常/停止）與拉桿，全部依面板圖的 layout 對位：
+// 印好的 RPM 錶盤（0–18 ×100，-135°..+135°）就是唯一的錶盤；拉桿從印好的拉桿槽伸出，上 = 運轉、下 = 重啟。
 // ---------------------------------------------------------------------------
 function buildVentPanel(room) {
   const { L, mats, group } = room;
@@ -348,50 +362,64 @@ function buildVentPanel(room) {
   root.name = 'ventPanel';
   root.position.set(vp.x, vp.y, vp.z);
   root.rotation.y = -Math.PI / 2;
+  const FW = 0.385, FH = 0.485, FZ = 0.0305;
+  const tex = room.tex.panel('vent');
+  const lay = tex.userData?.layout || {};
+  const at = (u, v, dz = 0) => new THREE.Vector3((u - 0.5) * FW, (v - 0.5) * FH, FZ + dz);
   const b = new Batcher(UVS);
   b.rbox('panelGrey', 0.4, 0.5, 0.06, 0.008, 0, 0, 0);
-  b.add('chrome', new THREE.TorusGeometry(0.076, 0.008, 10, 36), T({ x: 0, y: 0.09, z: 0.034 }));
-  b.box('darkMetal', 0.05, 0.17, 0.006, 0, -0.13, 0.033);
-  b.cyl('darkMetal', 0.02, 0.02, 0.07, 0, -0.13, 0.045, { rz: Math.PI / 2 }, 16);
   for (const [x, y] of [[-0.18, 0.23], [0.18, 0.23], [-0.18, -0.23], [0.18, -0.23]]) b.cyl('chrome', 0.007, 0.007, 0.004, x, y, 0.031, { rx: Math.PI / 2 }, 8);
   b.build((k) => mats.get(k), root, { name: 'ventPanel' });
-  const face = new THREE.Mesh(new THREE.PlaneGeometry(0.385, 0.485), mats.make({ map: room.tex.panel('vent'), roughness: 0.55 }, 'cr:ventFace'));
-  face.position.z = 0.0305;
+  const face = new THREE.Mesh(new THREE.PlaneGeometry(FW, FH), mats.make({ map: tex, roughness: 0.55 }, 'cr:ventFace'));
+  face.position.z = FZ;
   root.add(face);
-  // 轉速表
-  const dial = new THREE.Mesh(new THREE.CircleGeometry(0.072, 36), mats.make({ map: room.dialTex, roughness: 0.45 }, 'cr:dial'));
-  dial.position.set(0, 0.09, 0.0315);
-  root.add(noRaycast(dial));
+  // 轉速表：鍍鉻外圈（壓在印好的錶框上）、指針、軸蓋、玻璃
+  const gg = lay.gauge || { u: 0.5, v: 1 - 250 / 640, r: 118 / 512 };
+  const gc = at(gg.u, gg.v);
+  const gR = gg.r * FW;                         // 錶面半徑（m）
+  const bezel = new THREE.Mesh(new THREE.TorusGeometry(gR * 1.07, 0.0045, 10, 56), mats.get('chrome'));
+  bezel.position.set(gc.x, gc.y, FZ + 0.003);
+  root.add(noRaycast(bezel));
   const needle = new THREE.Group();
-  needle.position.set(0, 0.09, 0.036);
-  const nm = new THREE.Mesh(new THREE.BoxGeometry(0.0035, 0.06, 0.0015), mats.make({ color: 0xb01a10, roughness: 0.4, emissive: 0x200000 }, 'cr:needle'));
-  nm.position.y = 0.024;
-  const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.006, 14), mats.get('blackPlastic'));
-  cap.rotation.x = Math.PI / 2;
+  needle.position.set(gc.x, gc.y, FZ + 0.004);
+  const nLen = gR * 0.86;
+  const nm = new THREE.Mesh(new THREE.BoxGeometry(0.0032, nLen, 0.0012), mats.make({ color: 0xb01a10, roughness: 0.4, emissive: 0x200000 }, 'cr:needle'));
+  nm.position.y = nLen / 2 - 0.008;
+  const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.004, 14), mats.get('blackPlastic'));
+  cap.rotation.x = Math.PI / 2; cap.position.z = 0.001;
   needle.add(nm, cap);
   root.add(noRaycast(needle));
-  const glass = new THREE.Mesh(new THREE.CircleGeometry(0.074, 36), mats.make({ color: 0x111111, roughness: 0.05, transparent: true, opacity: 0.15, depthWrite: false }, 'cr:dialGlass'));
-  glass.position.set(0, 0.09, 0.041);
+  const glass = new THREE.Mesh(new THREE.CircleGeometry(gR * 1.04, 48), mats.make({ color: 0x111111, roughness: 0.05, transparent: true, opacity: 0.13, depthWrite: false }, 'cr:dialGlass'));
+  glass.position.set(gc.x, gc.y, FZ + 0.0075);
   root.add(noRaycast(glass));
-  // LED
-  const led = new SingleLed({ radius: 0.009, glowTex: room.glowTex, glowSize: 0.07 });
-  led.group.position.set(0.15, 0.205, 0.031);
-  root.add(led.group);
-  // 拉桿（繞面板水平軸旋轉；上 = 運轉，下 = 已拉下）
+  // 狀態燈：運轉（綠）／異常（琥珀）／停止（紅），各自坐在印好的（未點亮）燈座上
+  const ledLay = lay.leds || [{ u: 150 / 512, v: 1 - 462 / 640, r: 13 / 512 }, { u: 0.5, v: 1 - 462 / 640, r: 13 / 512 }, { u: 362 / 512, v: 1 - 462 / 640, r: 13 / 512 }];
+  const mk = (o) => {
+    const l = new SingleLed({ radius: o.r * FW * 0.8, glowTex: room.glowTex, glowSize: 0.055 });
+    l.group.position.copy(at(o.u, o.v, 0.0004));
+    root.add(l.group);
+    return l;
+  };
+  const leds = { run: mk(ledLay[0]), fault: mk(ledLay[1]), stop: mk(ledLay[2]) };
+  // 拉桿：軸在面板後方、從印好的拉桿槽中央伸出；繞水平軸轉動，桿頭在槽的上端（運轉）與下端（重啟）之間移動，
+  // 拉下時也不會超出面板下緣
+  const lv = lay.lever || { u: 0.5, vTop: 1 - 516 / 640, vBottom: 1 - 568 / 640 };
+  const ly0 = (lv.vTop - 0.5) * FH, ly1 = (lv.vBottom - 0.5) * FH;
   const lever = new THREE.Group();
   lever.name = 'ventLever';
-  lever.position.set(0, -0.13, 0.045);
-  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.016, 0.13, 0.016), mats.get('chrome'));
-  arm.position.y = 0.065;
-  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.022, 16, 12), mats.get('extRed'));
-  knob.position.y = 0.135;
-  lever.add(arm, knob, hitbox(0.08, 0.2, 0.08, 0, 0.08, 0));
+  lever.position.set((lv.u - 0.5) * FW, (ly0 + ly1) / 2, FZ - 0.012);
+  const ARM = 0.06;
+  const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.0055, 0.0065, ARM, 12), mats.get('chrome'));
+  arm.position.y = ARM / 2;
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.0125, 16, 12), mats.get('extRed'));
+  knob.position.y = ARM;
+  lever.add(arm, knob, hitbox(0.06, 0.1, 0.06, 0, ARM * 0.6, 0));
   lever.rotation.x = room.LEVER_UP;
   root.add(lever);
   group.add(root);
   room.objects.ventPanel = root;
   room.objects.ventLever = lever;
-  room.parts.vent = { needle, led, lever };
+  room.parts.vent = { needle, led: leds.fault, leds, lever, gaugeMax: gg.max || 1800 };
 }
 
 // ---------------------------------------------------------------------------
@@ -450,6 +478,19 @@ function buildFlashlightBox(room) {
 // ---------------------------------------------------------------------------
 // 側門（東牆；鉸鏈 z = hingeZ，向外 +X 開）
 // ---------------------------------------------------------------------------
+/**
+ * 側門門扇 UV：整片門扇（寬 w、高 h；門扇區域座標 z ∈ [0,w]、y ∈ [0,h]）只貼一次 steelDoorSide。
+ * 室內側（法線 -X，面向 +X 看時 +Z 在右）u 沿 +Z；廊道側（+X）u 沿 -Z，兩面的字/紋理都不會左右顛倒。
+ */
+function doorUV(g, w, h) {
+  const pos = g.attributes.position, nrm = g.attributes.normal, uv = g.attributes.uv;
+  for (let i = 0; i < pos.count; i++) {
+    const z = pos.getZ(i) / w, y = pos.getY(i) / h;
+    uv.setXY(i, nrm.getX(i) > 0.5 ? 1 - z : z, y);
+  }
+  uv.needsUpdate = true;
+  return g;
+}
 function buildSideDoor(room) {
   const { L, mats, group } = room;
   const B = room.sb;
@@ -475,7 +516,7 @@ function buildSideDoor(room) {
   pivot.position.set(E + 0.17, 0, z0);
   const b = new Batcher(UVS);
   const t = 0.05, wz0 = 0.4, wz1 = 0.62, wy0 = 1.3, wy1 = 1.8;
-  const slab = (za, zb, ya, yb) => b.box('sideDoor', t, yb - ya, zb - za, -t / 2, (ya + yb) / 2, (za + zb) / 2);
+  const slab = (za, zb, ya, yb) => doorUV(b.box('sideDoor', t, yb - ya, zb - za, -t / 2, (ya + yb) / 2, (za + zb) / 2), sd.width, sd.height);
   slab(0.006, 0.994, 0.006, wy0);
   slab(0.006, 0.994, wy1, sd.height - 0.006);
   slab(0.006, wz0, wy0, wy1);
