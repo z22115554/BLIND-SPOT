@@ -21,6 +21,9 @@
 //   addObstacles(list) 回傳移除函式、isValidPosition(x, z)、flashlightRig（光束延遲/補光/霧中光暈參數）、
 //   setFlashlightDim(mult, durationSec)（手電筒亮度乘數，與開關無關）
 // * 拖曳環顧模式（沒有指標鎖定）下按 Esc 也會 emit 'pause:request'（檢視畫面開啟時 Esc 優先關閉檢視）。
+// * 觸控（ctx.input.touch）：lock() 不要求指標鎖定；TouchControls 以 lookBy(dYaw, dPitch) 環顧、
+//   以 analog = { x: 右, z: 後 }（長度 0..1，類比速度）移動。坐著時推動搖桿＝按下移動鍵（平滑站起）。
+//   混合裝置從觸控切回滑鼠後，第一次點擊畫布會重新要求指標鎖定。桌機（從未觸控）行為完全不變。
 // =============================================================================
 import * as THREE from 'three';
 import { clamp, damp, smoothstep } from '../core/util.js';
@@ -98,6 +101,8 @@ export class PlayerController {
     this._hintShown = false;
     this._drag = null;              // { x, y }
     this._listeners = [];
+    /** 觸控搖桿（TouchControls 每幀寫入）：x = 右、z = 後，長度 0..1 = 走路速度比例 */
+    this.analog = { x: 0, z: 0 };
 
     // 手電筒：建構時就掛上相機（場景燈光數量從第一幀固定，避免拿起手電筒時整個場景重編譯 shader）
     this.flashlightRig = new FlashlightRig(ctx, this.flashlight);
@@ -145,6 +150,12 @@ export class PlayerController {
     // 遊戲暫停（例如切換分頁）時主動放開指標，讓玩家能點擊暫停畫面
     ctx.bus.on('game:paused', () => { if (this.isLocked) this.unlock(); this._keys.clear(); this._drag = null; });
     ctx.bus.on('settings:change', () => this._readSettings());
+    // 觸控：放開指標鎖定（觸控與指標鎖定互斥）
+    ctx.bus.on('input:mode', ({ touch } = {}) => {
+      if (!touch) return;
+      if (this.isLocked) this.unlock();
+      this._drag = null;
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -154,6 +165,7 @@ export class PlayerController {
     const el = this.ctx.renderer?.domElement;
     this._intentionalUnlock = false;
     if (this.isLocked) return;
+    if (this.ctx.input?.touch) return;   // 觸控裝置：不鎖定指標（以拖曳環顧）
     if (!el || typeof el.requestPointerLock !== 'function' || this._lockUnavailable) { this._enterDragMode(); return; }
     if (this._lockPending) return;
     const gesture = navigator.userActivation ? navigator.userActivation.isActive : true;
@@ -256,6 +268,11 @@ export class PlayerController {
     // 後備：若暫停畫面沒有攔截點擊，點畫布也能繼續
     if (ctx.clock.paused) { if (ctx.fsm?.currentName !== ctx.STATES.TITLE) ctx.bus.emit('pause:resume'); return; }
     if (this.isLocked) return;
+    // 混合裝置：從觸控切回滑鼠後第一次點擊畫布 → 這次點擊就是手勢，重新要求指標鎖定
+    if (!this.dragMode && ctx.input?.everTouch && !ctx.input.touch && !this._lockPending && ctx.fsm?.currentName !== ctx.STATES.TITLE) {
+      this.lock();
+      return;
+    }
     if (this.dragMode) {
       this._drag = { x: e.clientX, y: e.clientY, moved: 0 };
       e.target.style.cursor = 'grabbing';
@@ -263,6 +280,17 @@ export class PlayerController {
       if (!this._lockUnavailable && !this._everLocked && ctx.fsm?.currentName !== ctx.STATES.TITLE) this.lock();
     }
   }
+
+  /** 觸控環顧（弧度）。與滑鼠相同的阻擋條件與俯仰限制；沒有慣性。 */
+  lookBy(dYaw, dPitch) {
+    if (this._inputBlocked() || this._lookTween || this._standing) return;
+    if (!Number.isFinite(dYaw) || !Number.isFinite(dPitch)) return;
+    this.yaw = wrapAngle(this.yaw - dYaw);
+    this.pitch = clamp(this.pitch - dPitch, -PITCH_LIMIT, PITCH_LIMIT);
+  }
+
+  /** 目前能否以搖桿移動（TouchControls 決定是否顯示搖桿）。 */
+  canMove() { return !this._inputBlocked() && !this._moveTween; }
 
   _onMouseUp(e) {
     if (e.button !== 0) return;
@@ -500,11 +528,16 @@ export class PlayerController {
     const blocked = this._inputBlocked();
 
     // ---- 輸入方向 ------------------------------------------------------------
-    let ix = 0, iz = 0;
+    let ix = 0, iz = 0, mag = 1;
     if (!blocked && !this._moveTween) {
       for (const code of this._keys) {
         const k = MOVE_KEYS[code];
         if (k === 'f') iz -= 1; else if (k === 'b') iz += 1; else if (k === 'l') ix -= 1; else if (k === 'r') ix += 1;
+      }
+      // 觸控搖桿（沒有按鍵時）：方向＋類比速度
+      if (ix === 0 && iz === 0) {
+        const a = this.analog, m = Math.hypot(a.x || 0, a.z || 0);
+        if (m > 1e-3) { ix = a.x; iz = a.z; mag = Math.min(1, m); }
       }
     }
     const wantsMove = ix !== 0 || iz !== 0;
@@ -518,7 +551,7 @@ export class PlayerController {
     if (wantsMove && canWalk) {
       const len = Math.hypot(ix, iz);
       ix /= len; iz /= len;
-      const sp = this._shift ? BRISK_SPEED : WALK_SPEED;
+      const sp = (this._shift ? BRISK_SPEED : WALK_SPEED) * mag;
       const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw);
       // 前方 = (-sin, -cos)，右方 = (cos, -sin)
       tv.set((ix * cos + iz * sin) * sp, 0, (-ix * sin + iz * cos) * sp);

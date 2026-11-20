@@ -11,13 +11,15 @@
 //   * 字級以 #ui-root 的 font-size（隨視窗縮放，13–30px）為基準，所有尺寸用 em，720p 到 4K 比例一致。
 //   * 互動覆蓋層（標題、暫停、結局選擇、名單、錯誤）只有在可見時才 pointer-events:auto。
 //   * 結局選擇/名單顯示期間，若因指標鎖定解除而觸發暫停，會在下一幀自動恢復（這些畫面本身就是選單）。
+//   * 觸控模式（ctx.input.touch；<html class="bs-touch">）：標題的觸控提醒＝遊玩建議（SCRIPT.touch.notice）、
+//     操作說明換成觸控版、靈敏度標籤改為「視角靈敏度」、互動提示的鍵帽改為「點擊」且整個提示可以點、
+//     操作類暫時提示（hints.look / move / pointerLockFallback）換成 SCRIPT.touch.hints 的對應句。
+//     觸控樣式（尺寸、安全區）集中在 TouchControls 注入的 CSS，全部掛在 html.bs-touch 底下：桌機外觀不變。
 // =============================================================================
 import { FONTS } from '../gfx/canvasUtil.js';
 import { injectStyle, uiRoot, el, reveal, renderMarkup, baseCss } from './uiCommon.js';
 
-// 【補充文案】觸控裝置提醒（script.js 沒有對應字串；整合時可移到 SCRIPT.title.touchNotice）
 const PAUSE_FADE_MS = 1400;   // 暫停幕淡入/淡出（毫秒），見 .bs-pause 的 linear() 曲線
-const TOUCH_NOTICE = '本作需要鍵盤與滑鼠操作。觸控裝置可以開始遊戲，但可能無法正常遊玩。';
 
 const CSS = `
 /* ---------- HUD：準心 / 互動提示 / 目標 / 暫時提示 ---------- */
@@ -140,8 +142,11 @@ const CSS = `
 .bs-title__stamp { display: flex; align-items: center; gap: 1.3em; margin: 0 0 3.2em; font-family: var(--bs-mono);
   font-size: 0.76em; letter-spacing: 0.34em; color: var(--bs-dim); }
 .bs-title__stamp::after { content: ''; flex: 0 1 15em; height: 1px; background: var(--bs-rule); }
-.bs-title__touch { max-width: 30em; margin: 0 0 2.4em; padding: 0.85em 1.1em; border: 1px solid var(--bs-amber-soft);
+.bs-title__touch { display: none; max-width: 30em; margin: 0 0 2.4em; padding: 0.85em 1.1em; border: 1px solid var(--bs-amber-soft);
   font-size: 0.84em; line-height: 1.75; letter-spacing: 0.06em; color: var(--bs-fg); }
+.bs-controls--touch { display: none; }
+.bs-key--pause { gap: 0.22em; }
+.bs-key--pause::before, .bs-key--pause::after { content: ''; width: 0.16em; height: 0.8em; background: currentColor; }
 .bs-title__zh { margin: 0 -0.4em 0 0; font-family: var(--bs-serif); font-weight: 500; font-size: min(6.6em, 13.4vw, 15.5vh);
   line-height: 1.12; letter-spacing: 0.4em; white-space: nowrap; color: var(--bs-fg);
   text-shadow: 0.045em 0 0 rgba(217, 212, 199, 0.07), -0.028em 0 0 rgba(150, 172, 196, 0.06); }
@@ -289,6 +294,7 @@ export class UI {
       if (key === 'reduceFlicker') this.root.classList.toggle('bs-calm', !!value);
       this._syncSettingsViews();
     });
+    bus?.on?.('input:mode', () => this._syncInputMode());
     try { this.ctx.audio?.setMasterVolume?.(Number(settings?.get?.('volume') ?? 0.8)); } catch (e) { /* audio 尚未就緒 */ }
   }
 
@@ -312,6 +318,12 @@ export class UI {
     this.promptVerb = el('span', 'bs-prompt__verb');
     this.promptLabel = el('span', 'bs-prompt__label');
     this.prompt.append(this.promptKey, this.promptVerb, this.promptLabel);
+    // 觸控：整個提示就是互動按鈕（桌機時 pointer-events: none，點不到）
+    this.prompt.addEventListener('click', (e) => {
+      if (!this.ctx.input?.touch || this._prompt.key == null) return;
+      e.preventDefault();
+      try { this.ctx.interact?.useCurrent?.(); } catch (err) { console.warn('[ui] prompt tap failed', err); }
+    });
     // 目標（兩層交叉淡入淡出）
     this.obj = el('div', 'bs-obj');
     this.objItems = [0, 1].map(() => {
@@ -333,14 +345,26 @@ export class UI {
     }
   }
 
-  /** 「滑鼠：環顧　WASD：移動…」→ 鍵帽＋說明 */
+  /** 「滑鼠：環顧　WASD：移動…」→ 鍵帽＋說明。桌機版與觸控版各建一份，由 html.bs-touch 決定顯示哪一份。 */
   _buildControls() {
-    const line = this.ctx.SCRIPT?.title?.controls || '';
-    const wrap = el('p', 'bs-controls');
+    const frag = document.createDocumentFragment();
+    frag.append(this._buildControlsLine(this.ctx.SCRIPT?.title?.controls || '', 'bs-controls bs-controls--desk'));
+    const touchLine = this.ctx.SCRIPT?.touch?.controls;
+    if (touchLine) frag.append(this._buildControlsLine(touchLine, 'bs-controls bs-controls--touch'));
+    return frag;
+  }
+
+  _buildControlsLine(line, cls) {
+    const wrap = el('p', cls);
     for (const part of line.split(/[　]+|\s{2,}/).map((s) => s.trim()).filter(Boolean)) {
       const item = el('span', 'bs-controls__item');
       const i = part.indexOf('：');
-      if (i > 0) item.append(el('span', 'bs-key', part.slice(0, i)), el('span', '', part.slice(i + 1)));
+      if (i > 0) {
+        const key = el('span', 'bs-key', part.slice(0, i));
+        // 暫停符號（⏸）：不是每套字型都有，改用 CSS 畫兩條直線
+        if (/^\u23F8/.test(key.textContent)) { key.setAttribute('aria-label', key.textContent); key.textContent = ''; key.classList.add('bs-key--pause'); }
+        item.append(key, el('span', '', part.slice(i + 1)));
+      }
       else item.textContent = part;
       wrap.append(item);
     }
@@ -378,8 +402,11 @@ export class UI {
       return row;
     };
 
+    const sensRow = mkRange('sensitivity', S.sensitivity || 'sensitivity', 0.3, 2.5, 0.05, (v) => `${Number(v).toFixed(2)}×`, 1);
+    view.sensLabel = sensRow.querySelector('.bs-set__label');
+    if (view.sensLabel && this.ctx.input?.touch && this.ctx.SCRIPT?.touch?.sensitivity) view.sensLabel.textContent = this.ctx.SCRIPT.touch.sensitivity;
     wrap.append(
-      mkRange('sensitivity', S.sensitivity || 'sensitivity', 0.3, 2.5, 0.05, (v) => `${Number(v).toFixed(2)}×`, 1),
+      sensRow,
       mkRange('volume', S.volume || 'volume', 0, 1, 0.01, (v) => `${Math.round(Number(v) * 100)}%`, 0.8),
     );
     const chk = el('label', 'bs-set bs-set--check');
@@ -393,6 +420,24 @@ export class UI {
 
     this._settingsViews.push(view);
     return wrap;
+  }
+
+  /** 輸入方式切換（觸控 ↔ 滑鼠鍵盤）：重寫依輸入方式而不同的文字。 */
+  _syncInputMode() {
+    const touch = !!this.ctx.input?.touch;
+    const S = this.ctx.SCRIPT?.title?.settings || {};
+    const sens = touch ? (this.ctx.SCRIPT?.touch?.sensitivity || S.sensitivity) : S.sensitivity;
+    for (const v of this._settingsViews) if (v.sensLabel && sens) v.sensLabel.textContent = sens;
+    const a = this._promptArgs;
+    if (a) { this._prompt.key = null; this.setPrompt(a.text, a.opts); }
+  }
+
+  /** 觸控模式下，操作說明類的暫時提示換成觸控版本（同一句 SCRIPT.hints → SCRIPT.touch.hints）。 */
+  _touchHint(text) {
+    if (!this.ctx.input?.touch) return text;
+    const H = this.ctx.SCRIPT?.hints || {}, TH = this.ctx.SCRIPT?.touch?.hints || {};
+    for (const k of ['look', 'move', 'pointerLockFallback']) if (H[k] && text === H[k]) return TH[k] ?? text;
+    return text;
   }
 
   _applySetting(key, value) {
@@ -430,9 +475,13 @@ export class UI {
       t.setAttribute('aria-label', `${T.zh || ''} ${T.en || ''}`.trim());
       const main = el('div', 'bs-title__main');
       main.append(el('div', 'bs-title__stamp', this.ctx.CLOCK?.start || '02:00'));
-      let coarse = false;
-      try { coarse = !!window.matchMedia?.('(pointer: coarse)').matches; } catch (e) { /* ignore */ }
-      if (coarse) main.append(el('div', 'bs-title__touch', T.touchNotice || TOUCH_NOTICE));
+      // 觸控裝置的遊玩建議（只在 html.bs-touch 時顯示）
+      const tips = this.ctx.SCRIPT?.touch?.notice;
+      if (tips) {
+        const box = el('div', 'bs-title__touch');
+        for (const line of [].concat(tips)) box.append(el('p', '', line));
+        main.append(box);
+      }
       main.append(el('h1', 'bs-title__zh', T.zh || ''), el('p', 'bs-title__en', T.en || ''));
       const notes = el('ul', 'bs-title__notes');
       for (const n of T.notes || []) notes.append(el('li', '', n));
@@ -461,6 +510,8 @@ export class UI {
         e.preventDefault();
         if (this._titleStarted) return;
         this._titleStarted = true;
+        // 觸控裝置：同一個手勢內嘗試全螢幕＋橫向（Android；iPhone 不支援時安靜略過）
+        try { this.ctx.touchControls?.enterImmersive?.(); } catch (err) { /* ignore */ }
         const fn = this._onStart;
         this._onStart = null;
         try { fn?.(); } catch (err) { console.error('[ui] onStart failed', err); }
@@ -489,6 +540,9 @@ export class UI {
   // ===========================================================================
   /** 畫面下方中央互動提示：「[E] 檢視　黃色便利貼」。text = null 隱藏。 */
   setPrompt(text, { verb = '檢視', key = 'E' } = {}) {
+    this._promptArgs = text == null || text === '' ? null : { text, opts: { verb, key } };
+    // 觸控模式：鍵帽「E」→「點擊」
+    if (this.ctx.input?.touch && key) key = this.ctx.SCRIPT?.touch?.tapKey || key;
     const k = text == null || text === '' ? null : `${text}\u0000${verb ?? ''}\u0000${key ?? ''}`;
     if (k === this._prompt.key) return;
     this._prompt.key = k;
@@ -536,6 +590,7 @@ export class UI {
   /** 暫時提示（操作說明等），seconds 後淡出。 */
   hint(text, seconds = 4) {
     if (text == null || text === '') { this._hint.left = 0; this._hint.on = false; reveal(this.hintEl, false, 700); return; }
+    text = this._touchHint(text);
     this.hintEl.innerHTML = renderMarkup(String(text));
     this._hint.left = Math.max(0.5, Number(seconds) || 4);
     this._hint.on = true;
@@ -727,6 +782,9 @@ export class UI {
   }
 
   _syncMenuClass() { this.root.classList.toggle('bs-menu', !!(this._endVisible || this._creditsVisible)); }
+
+  /** 結局選擇或名單是否顯示中（TouchControls：此時不顯示暫停鈕）。 */
+  menuVisible() { return !!(this._endVisible || this._creditsVisible); }
 
   /** 除錯資訊（?debug=1 時右上角顯示）。 */
   debugText(str) {
