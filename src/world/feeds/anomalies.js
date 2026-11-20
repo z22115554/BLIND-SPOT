@@ -23,13 +23,15 @@ const C = (r, g, b) => new THREE.Color(r, g, b);
 /**
  * 各頻道各階段的 LD 畫面平均亮度倍率（相對第 0 階段）。
  * 量測方式：scripts/feed-stages.mjs —— 坐姿看主 CRT（800×450）的螢幕區域平均（線性亮度），
- * 每個階段穩定 2.5 秒（AGC 結束）後取樣，除以第 0 階段。
+ * 每個階段穩定 2.5 秒（AGC 結束）後取樣，扣掉 CRT 關機時的玻璃反光底值，再除以第 0 階段。
+ * 下列為整合時的實測值（feed-stages.mjs --write）。CAM-02 的熱源亮斑本身有 ±8% 的緩慢明暗，量測誤差約 ±3%。
+ * CAM-01 第 2 階段（霧轉為煙、洞口光被吞掉）實測 0.40，遠比原估計 0.78 暗——AGC 依此補償，切換進來仍是平順的。
  */
 export const MEAN_SCALE = {
-  1: [1, 0.98, 0.78],
-  2: [1, 0.97, 0.88, 0.80, 0.72],
-  3: [1, 0.9],
-  4: [1, 0.98, 0.9],
+  1: [1, 1.02, 0.40],
+  2: [1, 1, 0.93, 0.92, 0.83],
+  3: [1, 0.92],
+  4: [1, 0.97, 0.82],
 };
 export const MAX_STAGE = { 1: 2, 2: 4, 3: 1, 4: 2 };
 
@@ -155,14 +157,15 @@ function install02(ch) {
     for (const s of sil) s.visible = k >= 2;
     for (const g of farGlows) g.visible = k < 2;
     ch.ldLights[2].intensity = k >= 2 ? 8 : I2;
-    ch.blobGain = k >= 4 ? 0.6 : k >= 3 ? 0.75 : 1;
+    // 第 1 階段起，煙帶也壓暗一點熱源亮斑（整合時：只有煙帶的話，在 CRT 尺寸下 s0 → s1 幾乎看不出來）
+    ch.blobGain = k >= 4 ? 0.6 : k >= 3 ? 0.75 : k >= 1 ? 0.86 : 1;
   };
 }
 
 // =============================================================================
 // CAM-03 公務維修廊道：地上一道濕黑的拖痕（沿 HD 消防水帶的路徑，只在人影推進時延長）；T2：廊道起霾
 // =============================================================================
-function buildTrail(path, { width = 0.14, y = 0.006, samples = 160, eye = null, roughness = 0.15, opacity = 0.75 } = {}) {
+function buildTrail(path, { width = 0.14, y = 0.006, samples = 160, eye = null, lamp = null, roughness = 0.15, opacity = 0.75 } = {}) {
   const curve = new THREE.CatmullRomCurve3(path.map(([x, z]) => new THREE.Vector3(x, y, z)));
   const pts = curve.getSpacedPoints(samples);               // 轉角 → 門（z 遞增）
   const r = rng(303);
@@ -185,13 +188,16 @@ function buildTrail(path, { width = 0.14, y = 0.006, samples = 160, eye = null, 
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  // 法線：朝上，但偏向鏡頭（eye）。紅外線補光就在鏡頭旁，真正平的濕地面會把它反射到別處，
-  // 在近乎全黑的地板上一條黑色濕痕完全看不見；讓法線偏向鏡頭，光滑表面就會反射補光，
-  // 在畫面上讀成一道「濕亮的拖痕」（只有在補光照得到的地方），而不是一條發光的線。
+  // 法線：在近乎全黑的地板上，一條黑色濕痕完全看不見——濕地面讀得出來，是因為它像鏡子一樣反射遠處的燈。
+  // eye + lamp：法線取「鏡頭方向與盡頭燈方向的半向量」，光滑表面就把盡頭那盞燈反射進鏡頭，
+  // 在畫面上讀成一道從他身後延伸到廊道盡頭、濕亮的拖痕（整合時在 CRT 尺寸下比較過：朝上 / 朝鏡頭都看不見）。
+  // 只有 eye：法線偏向鏡頭（反射鏡頭旁的紅外線補光）。都沒有：朝上。
   const nrm = new Float32Array(pos.length);
-  const n = new THREE.Vector3();
+  const n = new THREE.Vector3(), a = new THREE.Vector3(), b = new THREE.Vector3();
   for (let i = 0; i < pos.length; i += 3) {
-    if (eye) n.set(eye.x - pos[i], eye.y - pos[i + 1], eye.z - pos[i + 2]).normalize();
+    if (eye) a.set(eye.x - pos[i], eye.y - pos[i + 1], eye.z - pos[i + 2]).normalize();
+    if (eye && lamp) n.copy(a).add(b.set(lamp.x - pos[i], lamp.y - pos[i + 1], lamp.z - pos[i + 2]).normalize()).normalize();
+    else if (eye) n.copy(a);
     else n.set(0, 1, 0);
     nrm[i] = n.x; nrm[i + 1] = n.y; nrm[i + 2] = n.z;
   }
@@ -219,7 +225,7 @@ function buildTrail(path, { width = 0.14, y = 0.006, samples = 160, eye = null, 
 
 function install03(ch) {
   const ld = ch.ld;
-  const trail = buildTrail(ch.hosePath, { width: 0.3, opacity: 0.85 });
+  const trail = buildTrail(ch.hosePath, { width: 0.3, opacity: 0.85, roughness: 0.3, eye: ch.camera.position.clone(), lamp: ch.farLamp.position.clone() });
   ld.add(trail.mesh);
   ch.trail = trail;
   ch._trailIndex = null;
