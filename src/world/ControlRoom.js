@@ -521,8 +521,8 @@ export class ControlRoom {
     try { uv = this.endingNoteTex?.penPosition?.() || uv; } catch (e) { /* 保持預設 */ }
     const note = this.objects.endingNote;
     const size = this.L.endingNote.size;
-    // penPosition 以貼圖畫布座標回傳（u 左→右、v 上→下）
-    const local = new THREE.Vector3((clamp(uv.u) - 0.5) * size, (0.5 - clamp(uv.v)) * size, 0.0015);
+    // TextureFactory.penPosition() 回傳標準 UV（u 左→右、v 下→上），與 PlaneGeometry 的 UV 一致
+    const local = new THREE.Vector3((clamp(uv.u) - 0.5) * size, (clamp(uv.v) - 0.5) * size, 0.0015);
     note.updateMatrix();
     this._penBase.copy(local.applyMatrix4(note.matrix));
     this.objects.pen.position.copy(this._penBase);
