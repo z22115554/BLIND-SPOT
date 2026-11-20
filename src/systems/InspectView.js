@@ -4,7 +4,8 @@
 // 開啟時：背景變暗（postfx.params.dim），右/下方顯示標題＋內文（支援 **粗體** *斜體*，段落陣列），
 // 若提供 object，於畫面中央以獨立小場景渲染其 clone（自身燈光），可用滑鼠拖曳/移動旋轉。
 // 開啟期間：玩家無法移動與環顧、GazeSystem 視為「沒有在看監視器」（這是盲區機制的關鍵）。
-// 關閉：E、滑鼠左/右鍵（開啟後 0.4 秒內忽略，避免同一次點擊立刻關閉）。
+// 關閉：E、Esc、滑鼠右鍵、在閱讀面板以外按左鍵（開啟後 0.4 秒內忽略，避免同一次點擊立刻關閉）。
+//       在閱讀面板上按左鍵（選取文字、拖曳捲動條）不會關閉。
 // 事件：'inspect:open' { id } / 'inspect:close' { id }
 // -----------------------------------------------------------------------------
 // 實作說明：
@@ -16,16 +17,27 @@
 //   * 平放物件（日誌、錶）會先傾斜朝向鏡頭並緩慢左右擺動；立體物件緩慢自轉。滑鼠（含指標鎖定）移動可旋轉。
 //   * 由輸入觸發的關閉延後到本幀最後（update）才執行：同一個 E/點擊事件不會又被 Interaction 拿去重新開啟。
 //   * 暫停中（clock.paused）忽略關閉輸入（點擊暫停畫面繼續值班時不會順便關掉檢視）。
+//   * 背景變暗：補間的是「亮度乘數」（對數等速、舒適曲線，變暗 1.6 秒／恢復 2.2 秒；光敏感模式 ×1.5），再換算回 dim，
+//     所以任何 0.25 秒內背景亮度變化 < 30%（以前是 dim 值的 sine 補間，關閉時一幀就亮了近 50%）。
+//   * 長文（日誌）超出面板高度時：底部淡出遮罩＋「滾輪捲動」提示，捲到底後消失；方向鍵/PageUp/PageDown 也能捲動。
+//     矮視窗（高度 ≤ 620px）收緊字級與行距。
+//   * 咖啡：以俯角檢視（看得到杯中的液面／浮灰／乾涸的焦痕），依 flags.coffeeStage 調整俯角。
 // =============================================================================
 import * as THREE from 'three';
 import { FONTS, makeCanvas, makeNoise, fbm, speckle } from '../gfx/canvasUtil.js';
 import { injectStyle, uiRoot, el, renderMarkup, isWhollyItalic, baseCss } from './uiCommon.js';
+import { dimToBrightness, brightnessToDim } from '../gfx/PostFX.js';
+import { comfortCurve } from './Flashlight.js';
 
 const INPUT_GUARD_MS = 400;
 const FIT_SIZE = 0.4;          // 物件最大邊自動縮放到約 0.4 m
 const DIM_LEVEL = 0.78;
-const DIM_IN = 0.9, DIM_OUT = 0.8;   // 背景變暗時間（秒）— 0.25 秒內整體亮度變化 < 30%
-const FADE_IN = 0.55, FADE_OUT = 0.45;
+// 背景變暗時間（秒，整段 1 ↔ 0.21 亮度）：亮度乘數以對數等速＋舒適曲線變化（光敏感模式 ×1.5）。
+// 實測畫面亮度的對數變化率約為乘數的 1.4～1.5 倍（ACES 暗部的趾部曲線＋關閉時 3D 物件先淡出、背景從更暗處回升），
+// 所以恢復比變暗更慢：每 0.25 秒畫面亮度變化約 ≤ 26%。
+const DIM_IN = 1.6, DIM_OUT = 2.2;
+const DIM_FULL_LOG = Math.log(1 / dimToBrightness(DIM_LEVEL));
+const FADE_IN = 0.8, FADE_OUT = 0.7;
 
 const CSS = `
 .bs-insp { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
@@ -60,6 +72,21 @@ const CSS = `
 .bs-insp__foot { flex: none; display: flex; align-items: center; gap: 0.8em; padding: 0.95em 2.2em 1.35em;
   border-top: 1px solid rgba(217, 212, 199, 0.07); font-size: 0.74em; letter-spacing: 0.2em; color: var(--bs-dim); }
 .bs-insp__foot::before { content: ''; width: 1.6em; height: 1px; background: var(--bs-amber-soft); }
+/* 長文提示：底部淡出＋「滾輪捲動 ▾」（捲到底後消失） */
+.bs-insp.is-more .bs-insp__body { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 3.2em), rgba(0, 0, 0, 0.12));
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 3.2em), rgba(0, 0, 0, 0.12)); }
+.bs-insp__scroll { margin-left: auto; white-space: nowrap; color: var(--bs-amber); opacity: 0; transition: opacity 0.5s ease; }
+.bs-insp__scroll::after { content: ' ▾'; }
+.bs-insp.is-more .bs-insp__scroll { opacity: 0.85; }
+@media (max-height: 620px) {
+  .bs-insp__panel { max-height: 90vh; }
+  .bs-insp__head { padding: 1.05em 2em 0.7em; }
+  .bs-insp__title { font-size: 1.24em; line-height: 1.35; }
+  .bs-insp__body { padding: 0.85em 2em 0.2em; font-size: 0.95em; line-height: 1.78; }
+  .bs-insp__body p { margin-bottom: 0.75em; }
+  .bs-insp__body p.bs-insp__hand { margin: 0.1em 0 0.9em 0.1em; line-height: 1.7; }
+  .bs-insp__foot { padding: 0.65em 2em 0.85em; }
+}
 
 @media (max-width: 760px), (max-aspect-ratio: 1/1) {
   .bs-insp__panel, .bs-insp.is-solo .bs-insp__panel { left: 0; right: 0; top: auto; bottom: 0; width: auto; max-height: 54vh;
@@ -92,7 +119,6 @@ void main() {
 }`;
 
 const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
-const easeSine = (t) => -(Math.cos(Math.PI * t) - 1) / 2;
 const damp = (a, b, lambda, dt) => a + (b - a) * (1 - Math.exp(-lambda * dt));
 
 export class InspectView {
@@ -163,7 +189,12 @@ export class InspectView {
     head.append(this.titleEl);
     this.bodyEl = el('div', 'bs-insp__body');
     this.footEl = el('footer', 'bs-insp__foot');
+    this.closeHintEl = el('span', 'bs-insp__close');
+    this.scrollHintEl = el('span', 'bs-insp__scroll');
+    this.scrollHintEl.setAttribute('aria-hidden', 'true');
+    this.footEl.append(this.closeHintEl, this.scrollHintEl);
     this.panel.append(head, this.bodyEl, this.footEl);
+    this.bodyEl.addEventListener('scroll', () => this._updateScrollCue(), { passive: true });
     this.dom.append(this.panel);
     uiRoot().append(this.dom);
     try { this.panel.style.backgroundImage = `url(${InspectView._paperTexture()})`; } catch (e) { /* 純色底亦可 */ }
@@ -172,11 +203,21 @@ export class InspectView {
   init() {
     // 關閉輸入：E / Esc / 滑鼠左右鍵
     window.addEventListener('keydown', (e) => {
-      if (!this.isOpen || e.repeat) return;
+      if (!this.isOpen) return;
+      const scroll = { ArrowDown: 48, ArrowUp: -48, PageDown: 0.85, PageUp: -0.85 }[e.code];
+      if (scroll) {
+        e.preventDefault();
+        const b = this.bodyEl;
+        b.scrollTop += Math.abs(scroll) < 1 ? scroll * b.clientHeight : scroll;
+        return;
+      }
+      if (e.repeat) return;
       if (e.code === 'KeyE' || e.key === 'e' || e.key === 'E' || e.key === 'Escape') this._requestClose(e);
     });
     window.addEventListener('mousedown', (e) => {
       if (!this.isOpen) return;
+      // 左鍵落在閱讀面板上（選取文字、拖曳捲動條；拖曳環顧模式下游標看得見）→ 不關閉。右鍵任何地方都關閉。
+      if (e.button === 0 && this.panel.contains(e.target)) return;
       if (e.button === 0 || e.button === 2) this._requestClose(e);
     });
     window.addEventListener('contextmenu', (e) => { if (this.isOpen || this.opacity > 0) e.preventDefault(); });
@@ -196,7 +237,7 @@ export class InspectView {
       const k = e.deltaMode === 1 ? 18 : e.deltaMode === 2 ? this.bodyEl.clientHeight : 1;
       this.bodyEl.scrollTop += e.deltaY * k;
     }, { passive: true });
-    window.addEventListener('resize', () => { if (this.opacity > 0 || this.isOpen) this._layout(); });
+    window.addEventListener('resize', () => { if (this.opacity > 0 || this.isOpen) { this._layout(); this._updateScrollCue(); } });
   }
 
   /** @param {{ id?: string, title: string, body: string[], object?: import('three').Object3D, scale?: number, onClose?: Function }} o
@@ -219,8 +260,9 @@ export class InspectView {
       this.bodyEl.append(p);
     }
     this.bodyEl.scrollTop = 0;
-    this.footEl.textContent = this.ctx.SCRIPT?.hints?.closeInspect || '';
-    this.footEl.hidden = !this.footEl.textContent;
+    this.closeHintEl.textContent = this.ctx.SCRIPT?.hints?.closeInspect || '';
+    this.scrollHintEl.textContent = this.ctx.SCRIPT?.hints?.scrollInspect || '';
+    this.footEl.hidden = !this.closeHintEl.textContent;
 
     // ---- 3D ----
     this._setObject(o.object || null, Number(o.scale) || 1);
@@ -232,6 +274,7 @@ export class InspectView {
     this.dom.classList.add('is-on');
     this._opacityTarget = 1;
     this._layout();
+    this._updateScrollCue();
 
     this._tweenDim(DIM_LEVEL, DIM_IN);
     if (id === 'stickyNote' || id === 'logbook' || id === 'endingNote') {
@@ -250,11 +293,12 @@ export class InspectView {
     this._time += dt;
     if (this._pendingClose) { this._pendingClose = false; if (this.isOpen) this._finishClose(true); }
 
-    // 背景變暗補間（遊戲時間）
+    // 背景變暗補間（遊戲時間）：亮度乘數在對數空間沿舒適曲線變化，再換算回 dim
     const tw = this._dimTw;
     if (tw && this.ctx.postfx?.params) {
       tw.t = Math.min(1, tw.t + (tw.dur > 0 ? dt / tw.dur : 1));
-      this.ctx.postfx.params.dim = tw.from + (tw.to - tw.from) * easeSine(tw.t);
+      const b = tw.b0 * Math.pow(tw.b1 / tw.b0, comfortCurve(tw.t));
+      this.ctx.postfx.params.dim = tw.t >= 1 ? tw.to : brightnessToDim(b);
       if (tw.t >= 1) this._dimTw = null;
     }
 
@@ -283,7 +327,7 @@ export class InspectView {
       this.pitchGroup.scale.setScalar(0.93 + 0.07 * k);
       this.pitchGroup.position.y = (1 - k) * -0.02;
       // 面板滑入的 CSS 轉場期間跟著重算位置；之後只在 resize 時重算（避免每幀強制排版）
-      if (this.isOpen && performance.now() - this._openedAt < 1300) this._layout();
+      if (this.isOpen && performance.now() - this._openedAt < 1300) { this._layout(); this._updateScrollCue(); }
     }
   }
 
@@ -319,7 +363,7 @@ export class InspectView {
       const u = this.compositeMat.uniforms;
       u.uRect.value.set(x0, y0, x1, y1);
       u.tMap.value = this.rt.texture;
-      u.uOpacity.value = easeInOut(Math.min(1, this.opacity));
+      u.uOpacity.value = comfortCurve(Math.min(1, this.opacity));
       renderer.render(this.quadScene, this.quadCam);
     } finally {
       renderer.autoClear = prevAuto;
@@ -363,7 +407,23 @@ export class InspectView {
 
   _tweenDim(to, dur) {
     const from = Number(this.ctx.postfx?.params?.dim) || 0;
-    this._dimTw = { from, to, t: 0, dur };
+    const b0 = dimToBrightness(from), b1 = dimToBrightness(to);
+    // 時間依「亮度比」等比例：從半途反向時不會用整段時間；最少 0.4 秒。光敏感模式 ×1.5。
+    const calm = !!this.ctx.settings?.get?.('reduceFlicker');
+    const frac = Math.min(1, Math.abs(Math.log(b1 / b0)) / DIM_FULL_LOG);
+    const d = frac < 1e-3 ? 0 : Math.max(0.4, dur * frac * (calm ? 1.5 : 1));
+    this._dimTw = { from, to, b0, b1, t: d > 0 ? 0 : 1, dur: d };
+  }
+
+  /** 內文超出面板高度且還沒捲到底 → 顯示底部淡出與「滾輪捲動」提示。 */
+  _updateScrollCue() {
+    const b = this.bodyEl;
+    if (!b || this.dom.hidden) return;
+    const more = b.scrollHeight - b.clientHeight > 4 && b.scrollTop + b.clientHeight < b.scrollHeight - 6;
+    if (more !== this._moreShown) {
+      this._moreShown = more;
+      this.dom.classList.toggle('is-more', more);
+    }
   }
 
   _setObject(src, extraScale) {
@@ -401,6 +461,11 @@ export class InspectView {
     if (size.y < 0.32 * horiz) { this.tiltGroup.rotation.set(1.08, 0, 0); r.mode = 'sway'; r.base = 0.0; }
     else if (size.z < 0.32 * Math.max(size.x, size.y)) { this.tiltGroup.rotation.set(0, 0, 0); r.mode = 'sway'; r.base = 0.06; }
     else { this.tiltGroup.rotation.set(0, 0, 0); r.mode = 'spin'; r.base = 0.34; }
+    // 咖啡：俯角檢視杯中（熱咖啡的液面／冷掉浮灰／杯底乾涸焦痕——越低的液面需要越陡的俯角）
+    if (this.current?.id === 'coffee') {
+      const st = Math.max(0, Math.min(2, this.ctx.flags?.coffeeStage | 0));
+      r.mode = 'spin'; r.base = st === 2 ? 1.08 : 0.82;
+    }
     r.yaw = r.tYaw = r.mode === 'spin' ? -0.5 : 0;
     r.pitch = r.tPitch = 0;
     r.swayCur = 0;

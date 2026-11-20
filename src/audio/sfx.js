@@ -382,7 +382,7 @@ export const SFX = {
   },
 
   fanSpinUp(v, t, o) { return fan(v, t, Math.max(1, o.duration || 4), true); },
-  fanSpinDown(v, t, o) { return fan(v, t, Math.max(1, o.duration || 5), false); },
+  fanSpinDown(v, t, o) { return fan(v, t, Math.max(0.6, o.duration || 5), false); },
 
   // 筆尖在紙上書寫（持續 opts.duration 秒）
   penScratch(v, t, o) {

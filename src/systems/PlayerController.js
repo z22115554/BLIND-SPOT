@@ -22,7 +22,7 @@
 // =============================================================================
 import * as THREE from 'three';
 import { clamp, damp, smoothstep } from '../core/util.js';
-import { FlashlightRig } from './Flashlight.js';
+import { FlashlightRig, FLASHLIGHT_RAMP, FLASHLIGHT_RAMP_CALM } from './Flashlight.js';
 
 const SENS_BASE = 0.0022;     // rad / px
 const PITCH_LIMIT = 1.45;
@@ -133,6 +133,7 @@ export class PlayerController {
     on(document, 'mousemove', (e) => this._onMouseMove(e));
     on(el, 'mousedown', (e) => this._onMouseDown(e));
     on(window, 'mouseup', (e) => this._onMouseUp(e));
+    on(window, 'keydown', (e) => this._onPauseKey(e));
     on(window, 'keydown', (e) => this._onKey(e, true));
     on(window, 'keyup', (e) => this._onKey(e, false));
     on(window, 'blur', () => { this._keys.clear(); this._shift = false; this._drag = null; });
@@ -270,6 +271,17 @@ export class PlayerController {
     }
   }
 
+  /** 拖曳環顧模式（沒有指標鎖定）時 Esc 一樣可以暫停。指標鎖定時 Esc 由瀏覽器解除鎖定 → _onLockChange 發出暫停。
+   *  檢視畫面開啟時 Esc 優先關閉檢視；標題畫面、已暫停時不處理（暫停畫面以點擊繼續）。 */
+  _onPauseKey(e) {
+    if (e.code !== 'Escape' && e.key !== 'Escape') return;
+    if (e.repeat || this.isLocked || isTypingTarget(e.target)) return;
+    const ctx = this.ctx;
+    if (ctx.inspect?.isOpen || ctx.clock.paused) return;
+    if (!ctx.fsm || ctx.fsm.currentName === ctx.STATES.TITLE) return;
+    ctx.bus.emit('pause:request');
+  }
+
   _onKey(e, down) {
     if (isTypingTarget(e.target)) return;
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { this._shift = down; return; }
@@ -398,15 +410,26 @@ export class PlayerController {
     this.obstacles = [...this._moduleObstacles, ...this._extraObstacles];
   }
 
-  /** 手電筒（掛在相機上，帶一點延遲跟隨的 SpotLight）。 */
+  /** 手電筒（掛在相機上，帶一點延遲跟隨的 SpotLight）。
+   *  duration：開/關過渡秒數。省略 = 預設（1.1 秒；光敏感模式 1.6 秒）；比預設短的值會被拉長到預設
+   *  （舒適規則：0.25 秒內亮度變化 ≤ 30%）；0 = 立即（只用在全黑畫面下的重置）。 */
   setFlashlight(on, duration) {
     on = !!on;
     if (on) this.hasFlashlight = true;
     const changed = on !== this.flashlightOn;
     this.flashlightOn = on;
-    const d = duration ?? (this._reduceFlicker ? 0.45 : 0.15);
+    const base = this._reduceFlicker ? FLASHLIGHT_RAMP_CALM : FLASHLIGHT_RAMP;
+    const d = duration != null && Number(duration) <= 0 ? 0 : Math.max(base, Number(duration) || 0);
     this.flashlightRig.setOn(on, d);
     if (changed) { try { this.ctx.audio?.sfx?.('flashlight'); } catch (e) { console.warn('[player] sfx failed', e); } }
+  }
+
+  /** 手電筒亮度乘數（0..1，與開關無關），以同一條舒適曲線在 durationSec 秒內過渡（光敏感模式 ×1.5）。
+   *  手電筒關到全黑後自動回到 1。例：車燈事件 setFlashlightDim(0.3, 1.0)，結束後 setFlashlightDim(1, 1.5)。 */
+  setFlashlightDim(mult = 1, durationSec = 0.8) {
+    const m = clamp(Number(mult), 0, 1);
+    const d = Math.max(0, Number(durationSec) || 0) * (this._reduceFlicker ? 1.5 : 1);
+    this.flashlightRig.setDim(Number.isFinite(m) ? m : 1, d);
   }
 
   setHeadBob(on) { this.headBob = !!on; }

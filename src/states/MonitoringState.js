@@ -141,12 +141,14 @@ export class MonitoringState extends StoryState {
     ctx.flags.ventStopped = true;
     ctx.flags.ventDying = true;
     this._dying = null;
-    T(() => a?.setVent?.({ level: 0, rate: AMB.ventDying.rate, detune: AMB.ventDying.detune }, 4));
-    T(() => a?.sfx?.('fanSpinDown', { position: points(ctx).vent, gain: 0.8 }));
+    // 40 秒的變調衰弱之後，最後是「突然」停下：0.6 秒內轉速掉光（短促的停機聲），0.8 秒內耳朵被抽成真空——
+    // 環境音的消失要被感覺成一個洞，而不是慢慢淡掉（仍是平滑 ramp，沒有任何突發巨響）。
+    T(() => a?.setVent?.({ level: 0, rate: AMB.ventDying.rate, detune: AMB.ventDying.detune }, 0.6));
+    T(() => a?.sfx?.('fanSpinDown', { position: points(ctx).vent, gain: 0.6, duration: 0.7 }));
     T(() => ctx.controlRoom.setVentGauge(null));
     T(() => ctx.controlRoom.setVentLed('off'));
     // 聽覺真空 + 心跳出現
-    T(() => a?.setSilence?.(0.6, 6));
+    T(() => a?.setSilence?.(0.6, 0.8));
     ctx.flags.heartbeat = true;
     this._hbIdx = -1;
     setRight(ctx, 'ventDying', 'warn');

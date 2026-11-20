@@ -6,7 +6,10 @@
 // * 反彈補光：在光束命中點附近放一盞極弱、不投影的 PointLight，模擬窄廊道裡光線打在牆上的二次反射
 //   （命中距離以 LAYOUT 的房間盒子解析計算，不做昂貴的場景射線）。
 // * 霧中光暈：全螢幕加法疊加的柔和光暈，強度依 scene.fog.density 與光束射程而定，讓濃霧「被照亮」。
-// * 開關：亮度沿平滑曲線過渡（預設 0.15 秒；光敏感模式 0.45 秒），色溫由暖橘升到暖白（鎢絲燈感）。
+// * 開關：亮度沿「舒適曲線」過渡（comfortCurve：兩端柔和、中段等速，最大斜率只有平均的 1.14 倍），
+//   開/關預設 1.1 秒（光敏感模式 1.6 秒）→ 任何 0.25 秒內的畫面亮度變化 ≤ 最終亮度的約 26%（黃金規則 ≤ 30%）。
+//   色溫由暖橘升到暖白（鎢絲燈感），但強度會補償顏色本身的亮度差，所以變色不會額外造成亮度跳動。
+//   dim（setDim）：獨立於開關的亮度乘數（例如車燈事件時讓手電筒相形失色），同一條曲線過渡。
 //   沒有任何閃爍；關閉時 shadow.autoUpdate = false 以省下陰影貼圖的渲染。
 // =============================================================================
 import * as THREE from 'three';
@@ -23,15 +26,68 @@ const SHADOW_FOCUS = 1.12;
 const COOKIE_EDGE = Math.tan(BEAM_ANGLE) / Math.tan(BEAM_ANGLE * SHADOW_FOCUS); // 光錐邊緣在貼圖上的半徑
 const COLOR_ON = new THREE.Color(0xfff0d8);
 const COLOR_WARM = new THREE.Color(0xffa860);
+const lumOf = (c) => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;   // 線性亮度
+const LUM_ON = lumOf(COLOR_ON);
+/** 開/關手電筒的預設過渡秒數（一般 / 光敏感模式）。 */
+export const FLASHLIGHT_RAMP = 1.1, FLASHLIGHT_RAMP_CALM = 1.6;
+const MIN_RAMP = 0.4;            // 任何亮度變化 ≥ 0.4 秒（黃金規則）
+
+// 舒適曲線：斜率 s(x) = (1 - e^(-x/τ))(1 - e^(-(1-x)/τ))，積分後正規化。
+// 起步與收尾柔和（沒有「一開就亮一截」的瞬間），中段等速；最大斜率 = 1/∫s ≈ 1.14 倍平均斜率，
+// 所以任一 0.25 秒窗內的變化 ≤ 1.14 × 0.25 / 時長 × 總變化量。（指數/smoothstep 曲線的最大斜率是 1.5 倍以上。）
+const CURVE_TAU = 0.06;
+const CURVE_N = 512;
+const CURVE_LUT = (() => {
+  const lut = new Float32Array(CURVE_N + 1);
+  const sl = (x) => (1 - Math.exp(-x / CURVE_TAU)) * (1 - Math.exp(-(1 - x) / CURVE_TAU));
+  let acc = 0;
+  for (let i = 1; i <= CURVE_N; i++) { acc += sl((i - 0.5) / CURVE_N) / CURVE_N; lut[i] = acc; }
+  for (let i = 1; i <= CURVE_N; i++) lut[i] /= acc;
+  lut[CURVE_N] = 1;
+  return lut;
+})();
+/** 0..1 → 0..1 的舒適亮度曲線（單調、兩端斜率為 0、中段近似等速）。 */
+export function comfortCurve(x) {
+  if (!(x > 0)) return 0;
+  if (x >= 1) return 1;
+  const f = x * CURVE_N, i = Math.floor(f);
+  return CURVE_LUT[i] + (CURVE_LUT[i + 1] - CURVE_LUT[i]) * (f - i);
+}
+
+/** 以 comfortCurve 由目前值過渡到目標值的小工具（遊戲時間 dt 驅動；中途改目標會從目前值重新起步）。 */
+class ComfortRamp {
+  constructor(v = 0) { this.value = v; this.target = v; this._from = v; this._x = 1; this._dur = 0; }
+  /** duration = 由 0 到 1 整段所需秒數；實際時間依變化量等比例縮短（但不少於 MIN_RAMP）。≤ 0 = 立即。 */
+  set(target, duration) {
+    target = clamp(Number(target) || 0, 0, 1);
+    const d = Number(duration) || 0;
+    if (d <= 0) { this.value = this.target = this._from = target; this._x = 1; return; }
+    if (target === this.target && this._x < 1) return;          // 同一個目標：維持原本的過渡
+    this._from = this.value;
+    this.target = target;
+    this._dur = Math.max(MIN_RAMP, d * Math.abs(target - this.value));
+    this._x = target === this.value ? 1 : 0;
+  }
+  update(dt) {
+    if (this._x >= 1) { this.value = this.target; return this.value; }
+    this._x = Math.min(1, this._x + dt / this._dur);
+    this.value = this._from + (this.target - this._from) * comfortCurve(this._x);
+    return this.value;
+  }
+  get busy() { return this._x < 1; }
+}
 
 export class FlashlightRig {
   /** @param {object} ctx  @param {THREE.SpotLight} light 由 PlayerController 建立的 SpotLight（player.flashlight） */
   constructor(ctx, light) {
     this.ctx = ctx;
     this.light = light;
-    this.level = 0;          // 0..1 實際亮度（ramp 後）
+    this.level = 0;          // 0..1 開關亮度（舒適曲線過渡後）
     this.targetLevel = 0;
-    this.rampDur = 0.15;
+    this.rampDur = FLASHLIGHT_RAMP;
+    this.dim = 1;            // 0..1 亮度乘數（setDim）
+    this._on = new ComfortRamp(0);
+    this._dim = new ComfortRamp(1);
     this.maxIntensity = MAX_INTENSITY;
     this.bounceStrength = 0.036; // 反彈補光比例（相對於主燈 cd）
     this.hazeStrength = 1.0;     // 霧中光暈強度倍率（0 = 關閉）
@@ -90,9 +146,20 @@ export class FlashlightRig {
     scene.add(this.bounce);
   }
 
-  setOn(on, duration) {
+  /** 開/關。duration ≤ 0 = 立即（只在全黑的重置時使用）；否則為 0→1 整段的秒數。 */
+  setOn(on, duration = FLASHLIGHT_RAMP) {
     this.targetLevel = on ? 1 : 0;
-    this.rampDur = Math.max(0.05, duration);
+    this.rampDur = Math.max(0, Number(duration) || 0);
+    this._on.set(this.targetLevel, this.rampDur);
+    if (this.rampDur <= 0) { this.level = this._on.value; if (!on) this._dim.set(1, 0); }
+  }
+
+  /** 亮度乘數（0..1），以舒適曲線在 duration 秒內過渡；與開關無關。 */
+  setDim(mult = 1, duration = 0.8) {
+    const d = Math.max(0, Number(duration) || 0);
+    // 「整段」時間換算：讓實際過渡時間 = duration（ComfortRamp 會依變化量縮放）
+    const span = Math.abs(clamp(Number(mult), 0, 1) - this._dim.value);
+    this._dim.set(mult, d > 0 && span > 1e-4 ? Math.max(d, MIN_RAMP) / span : d);
   }
 
   /** 瞬間把光束方向對齊視線（瞬移/過場後）。 */
@@ -100,16 +167,18 @@ export class FlashlightRig {
 
   update(dt, t, { camera, moveAmount = 0, stridePhase = 0, reduceFlicker = false }) {
     const light = this.light;
-    // ---- 亮度 ramp（平滑曲線，無閃爍）---------------------------------------------
-    if (this.level !== this.targetLevel) {
-      const step = dt / this.rampDur;
-      this.level = this.targetLevel > this.level ? Math.min(this.targetLevel, this.level + step) : Math.max(this.targetLevel, this.level - step);
-    }
-    const k = smoothstep(0, 1, this.level);
+    // ---- 亮度（舒適曲線，無閃爍）-------------------------------------------------------
+    this.level = this._on.update(dt);
+    this.dim = this._dim.update(dt);
+    // 關到全黑之後，dim 回到 1（下次開燈從正常亮度開始；此時亮度為 0，看不出來）
+    if (this.level <= 0 && !this._on.busy && this.targetLevel === 0 && this.dim !== 1) { this._dim.set(1, 0); this.dim = 1; }
+    const k = this.level * this.dim;
     // 光束打在很近的表面時略為收斂（像眼睛適應），避免整片過曝；beamDistance 已平滑，變化緩慢無閃爍
     const nearDim = 0.55 + 0.45 * smoothstep(0.45, 2.6, this.beamDistance);
-    light.intensity = this.maxIntensity * k * nearDim;
     light.color.copy(COLOR_WARM).lerp(COLOR_ON, smoothstep(0.0, 0.85, this.level));
+    // 色溫變化不改變亮度：以顏色本身的亮度做補償（暖橘色的亮度只有暖白的一半）
+    const colorComp = LUM_ON / Math.max(0.05, lumOf(light.color));
+    light.intensity = this.maxIntensity * k * nearDim * colorComp;
     const active = k > 0.001;
     light.shadow.autoUpdate = active;
     if (!active) light.shadow.needsUpdate = false;
@@ -150,15 +219,16 @@ export class FlashlightRig {
     const near = Math.min(d, 2.4);
     const pull = Math.min(0.32, near * 0.28);
     this.bounce.position.copy(this._pos).addScaledVector(this._dir, Math.max(0.05, near - pull));
-    this.bounce.intensity = this.maxIntensity * k * this.bounceStrength;
+    this.bounce.intensity = this.maxIntensity * k * this.bounceStrength * colorComp;
     this.bounce.distance = 4.5;
 
     // ---- 霧中光暈 -----------------------------------------------------------------------
     const fog = this.ctx.scene.fog;
     const dens = fog && fog.isFogExp2 ? fog.density : (fog ? 0.03 : 0);
     const u = this.haze.material.uniforms;
-    u.strength.value = k * this.hazeStrength * (this.maxIntensity / MAX_INTENSITY) * 0.14;
-    this.haze.visible = u.strength.value > 0.0005 && dens > 0.004;
+    u.strength.value = k * this.hazeStrength * (this.maxIntensity / MAX_INTENSITY) * 0.14 * colorComp;
+    // 貢獻可忽略（燈剛開/快關、幾乎沒霧）時整個全螢幕光暈 pass 都不畫
+    this.haze.visible = u.strength.value > 0.002 && dens > 0.004;
     if (this.haze.visible) {
       const invCam = this._tmpQ.copy(this._camQ).invert();
       u.beamDir.value.copy(this._dir).applyQuaternion(invCam);

@@ -101,7 +101,7 @@ export class AudioEngine {
     this._lp = { x: 0, y: 1.2, z: -1.6 };
     this._lf = { x: 0, y: 0, z: -1 };
     /** 可調參數（整合時微調用） */
-    this.tuning = { sfxGain: SFX_GAIN, footGain: FOOT_GAIN, extraStepChance: 0.7, extraStepAlwaysFirst: 3, echoBehind: 3.2 };
+    this.tuning = { sfxGain: SFX_GAIN, footGain: FOOT_GAIN, extraStepChance: 1, extraStepAlwaysFirst: 3, extraStepMinWalk: 0.4, echoBehind: 3.2 };
     /** 對講機各成分的混音（可調） */
     this.intercomMix = INTERCOM_MIX;
     // 持續音層：unlock 前只記錄目標值，unlock 後套用
@@ -497,17 +497,21 @@ export class AudioEngine {
    * 依 segments 的 dur 與 kind 合成（static / breath / speech / knock / cough / axe / burst）。
    * speech = 共振峰濾波噪音模擬的人聲呢喃（音節數 ≈ 該段中文字數），clean=false 時再經對講機頻帶（300–3000Hz）與雜訊。
    * 開始播放時會自動停止來電鈴聲。
-   * @returns {{ duration: number, done: Promise<void> }}
+   * startAt（額外）：語音在 AudioContext 時鐘上的起點（ac.currentTime 秒；尚未就緒時為 null），
+   * 讓字幕能以音訊時間對齊（低幀率時遊戲時鐘會落後真實時間）。
+   * @returns {{ duration: number, done: Promise<void>, startAt: number|null }}
    */
   playIntercom(stageIndex) {
     const stage = this.ctx.SCRIPT?.intercom?.[stageIndex];
     const segs = stage?.segments || [];
     const duration = segs.reduce((a, s) => a + (Number(s.dur) || 0), 0);
     const done = this.ctx.clock.wait(duration);
+    let startAt = null;
     if (this.ready && segs.length) {
       try {
         this.setIntercomRing(false);
         this.stopIntercom(0.3);
+        startAt = this.now() + 0.04;   // = playIntercomStage 的 t0
         this._intercom = playIntercomStage(this, stage, stageIndex);
       } catch (e) {
         console.error('[audio] playIntercom', e);
@@ -516,7 +520,7 @@ export class AudioEngine {
       this.setIntercomRing(false);
       this._pending.push({ kind: 'intercom', stage: stageIndex, at: performance.now() });
     }
-    return { duration, done };
+    return { duration, done, startAt };
   }
   /** （額外）中止正在播放的對講機語音（平滑淡出）。 */
   stopIntercom(fade = 0.4) {
@@ -550,12 +554,15 @@ export class AudioEngine {
   }
   _onStopped({ walkedFor } = {}) {
     if (!this.ready || !this.echo.enabled || !this.echo.extraStep || !this._lastStep) return;
-    if (!(Number(walkedFor) > 1.0)) return;
+    // 規格：停下時「一定」多一步（走了至少 ~0.4 秒才算「走路後停下」，原地微調位置不觸發）
+    if (!(Number(walkedFor) >= this.tuning.extraStepMinWalk)) return;
     this._stops++;
-    if (this._stops > this.tuning.extraStepAlwaysFirst && Math.random() > this.tuning.extraStepChance) return;
+    if (this.tuning.extraStepChance < 1 && this._stops > this.tuning.extraStepAlwaysFirst && Math.random() > this.tuning.extraStepChance) return;
     try {
       const now = this.now();
-      const base = (this._lastEcho || now) + this.echo.delay * rand(0.95, 1.12);
+      // 以最後一次回音為基準再隔一個延遲（回音早已結束——例如還沒踏出第一步就停下——則從現在起算）
+      const ref = this._lastEcho && this._lastEcho > now - this.echo.delay ? this._lastEcho : now;
+      const base = ref + this.echo.delay * rand(0.95, 1.12);
       const t = Math.max(now + 0.08, base);
       // 「多出一步」：不是你的那一步——另一隻腳、稍重
       const last = this._lastStep.p;

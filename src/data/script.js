@@ -212,6 +212,8 @@ export const SCRIPT = {
     look: '移動滑鼠環顧四周',
     move: 'WASD 移動　E／左鍵 互動',
     closeInspect: 'E／右鍵／Esc 關閉',
+    scrollInspect: '滾輪捲動',
+    frameError: '畫面更新發生錯誤。請重新整理頁面（F5）再試一次。',
     pointerLockFallback: '無法鎖定滑鼠：請按住滑鼠左鍵拖曳來環顧',
   },
 

@@ -40,6 +40,9 @@ const CSS = `
 .bs-sub__text em { font-style: italic; }
 .bs-sub .bs-sfx { color: #a29c8f; font-size: 0.86em; letter-spacing: 0.1em; }
 .bs-seg--new { animation: bs-seg-in 0.6s ease both; }
+/* 逐段累加的對講機字幕：每一段是一個不可拆的單位，換行只發生在段與段之間（不會出現「燒起來／了……」這種斷句）；
+   單一段比整行還寬時才在段內換行。 */
+.bs-sub--normal .bs-seg { display: inline-block; max-width: 100%; }
 @keyframes bs-seg-in { from { opacity: 0; } to { opacity: 1; } }
 
 .bs-sub--monologue { padding: 0.5em 1.2em; }

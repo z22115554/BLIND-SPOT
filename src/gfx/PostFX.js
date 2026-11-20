@@ -7,7 +7,7 @@
 // 光敏感模式（ctx.settings.get('reduceFlicker')）：顆粒改為低振幅、低更新率；色差關閉。
 // -----------------------------------------------------------------------------
 // 實作說明：
-//   * EffectComposer 使用 HalfFloat 目標（線性 HDR）；場景目標啟用 MSAA（保留 renderer 的反鋸齒），
+//   * EffectComposer 使用 HalfFloat 目標（線性 HDR）；場景目標啟用 2× MSAA（canvas 本身不開反鋸齒），
 //     中間目標不做 MSAA。最終 ShaderPass 在 tone mapping 之前（線性色彩）運算，OutputPass 負責 ACES + sRGB。
 //   * 為了讓「數值變化 ≒ 畫面亮度變化」（配合 0.25 秒內亮度變化 ≤ 30% 的規則），fade 換算成
 //     tone mapping 前的乘數 (1 - fade)^1.15（dim 為 (1 - 0.9·dim)^1.3，0.78 時背景約剩 1/4 亮度）：
@@ -28,6 +28,11 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 const clamp01 = (v) => Math.min(1, Math.max(0, Number(v) || 0));
+
+/** params.dim → 背景亮度乘數（shader 的 uDimMul）。InspectView 以此換算，讓「亮度」而不是 dim 值呈對數等速變化。 */
+export const dimToBrightness = (dim) => Math.pow(1 - 0.9 * clamp01(dim), 1.3);
+/** dimToBrightness 的反函數。 */
+export const brightnessToDim = (b) => clamp01((1 - Math.pow(Math.min(1, Math.max(1e-4, Number(b) || 0)), 1 / 1.3)) / 0.9);
 
 const FinalShader = {
   name: 'BlindSpotFinalShader',
@@ -199,7 +204,7 @@ export class PostFX {
     try { floatMSAA = !!r.extensions?.has?.('EXT_color_buffer_float'); } catch (e) { floatMSAA = false; }
     const rt = new THREE.WebGLRenderTarget(Math.max(1, size.x * pr), Math.max(1, size.y * pr), {
       type: THREE.HalfFloatType,
-      samples: floatMSAA ? (pr < 1.5 ? 4 : 2) : 0,
+      samples: floatMSAA ? 2 : 0,   // 2× MSAA：場景多為柔和的暗部，4× 的額外成本在內顯上不划算
     });
     rt.texture.name = 'PostFX.rt';
     this.composer = new EffectComposer(r, rt);
@@ -251,8 +256,22 @@ export class PostFX {
     u.uGrainScale.value = 1.25 * Math.max(1, (h * pr) / 1080);
   }
 
+  /** 畫面是否完全黑（fade ≥ 0.999）：此時不必渲染 3D 場景（標題、終幕選單/名單）。 */
+  isBlack() { return clamp01(this.params.fade) >= 0.999; }
+
   render(dt, t) {
     const { renderer, scene, camera } = this.ctx;
+    if (this.isBlack()) {
+      // 全黑：只清除畫面（省下 RenderPass + MSAA + 後期）；fade 一降到 0.999 以下的那一幀就恢復完整渲染，
+      // 那時亮度乘數 ≈ 0.0008，畫面仍是黑的，所以不會有跳變。
+      renderer.setRenderTarget(null);
+      renderer.getClearColor(this._cc || (this._cc = new THREE.Color()));
+      const a = renderer.getClearAlpha();
+      renderer.setClearColor(0x000000, 1);
+      renderer.clear(true, true, false);
+      renderer.setClearColor(this._cc, a);
+      return;
+    }
     if (!this.enabled || this._failed) { renderer.render(scene, camera); return; }
     const p = this.params;
     const u = this.finalPass.uniforms;
@@ -277,7 +296,7 @@ export class PostFX {
     u.uChromatic.value = calm ? 0 : Math.max(0, Number(p.chromatic) || 0);
     u.uFadeMul.value = Math.pow(1 - fade, 1.15);
     u.uDim.value = dim;
-    u.uDimMul.value = Math.pow(1 - 0.9 * dim, 1.3);     // dim 0.78 → 背景約剩 1/4 亮度（檢視時物件與文字才跳得出來）
+    u.uDimMul.value = dimToBrightness(dim);              // dim 0.78 → 背景約剩 1/5 亮度（檢視時物件與文字才跳得出來）
     u.uDesat.value = clamp01(p.desaturate);
     u.uSmoke.value = smoke;
     u.uSoft.value = Math.max(smoke * 0.62, dim * 0.85);
