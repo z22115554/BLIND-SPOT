@@ -800,6 +800,10 @@ export function registerCommonInteractables(ctx) {
       label: () => (I.camButtonAlert && ctx.feeds?.isAlerted?.(n) ? I.camButtonAlert(n) : I.camButton(n)), verb: V.press,
       enabled: camOk,
       onUse: () => {
+        // 觸控：玩家直接點按鈕、看不到準心提示 → 點到有動態偵測的頻道時，把同一句提示淡入 1.6 秒（色弱玩家的文字線索）
+        if (ctx.input?.touch && I.camButtonAlert && ctx.feeds?.isAlerted?.(n) && !ctx.ui?.hintVisible?.()) {
+          T(() => ctx.ui.hint(I.camButtonAlert(n), 1.6), 'camAlertHint');
+        }
         T(() => ctx.feeds.setChannel(n), 'setChannel');
         T(() => ctx.controlRoom.pressCamButton(i), 'pressCamButton');
         T(() => ctx.audio?.sfx?.('camSwitch', { position: btn.getWorldPosition(new THREE.Vector3()) }));

@@ -438,7 +438,7 @@ export class UI {
   _touchHint(text) {
     if (!this.ctx.input?.touch) return text;
     const H = this.ctx.SCRIPT?.hints || {}, TH = this.ctx.SCRIPT?.touch?.hints || {};
-    for (const k of ['look', 'move', 'pointerLockFallback']) if (H[k] && text === H[k]) return TH[k] ?? text;
+    for (const k of ['look', 'move', 'pointerLockFallback', 'motion']) if (H[k] && text === H[k]) return TH[k] ?? text;
     return text;
   }
 

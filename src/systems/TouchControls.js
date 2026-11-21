@@ -17,6 +17,9 @@
 // * 直向：fovFor() 放寬垂直視角（最多 100°），讓水平視角至少約 62°，控制台與 CRT 仍完整可見（不拉伸）。
 // * 瀏覽器衛生：觸控模式下畫布 touch-action:none、阻止相容滑鼠事件、長按選單、iOS 雙指縮放（gesturestart）、
 //   頁面回彈（只允許標題/暫停/檢視內文等可捲動區域捲動）；所有 HUD 依 env(safe-area-inset-*) 內縮。
+// * 湊近看（只有觸控）：點一下監視器（主 CRT 或左右系統螢幕；沒有點到可互動物件時）→ 0.8 秒平滑轉向該螢幕並把垂直視角
+//   收窄到 38°（直向：水平視角至少 46°）。手機上 CRT 只有約 210 px 寬，疊字與琥珀燈太小；湊近後約放大 2 倍。
+//   再點一下畫面（不是按鈕）、拖曳環顧、推搖桿、開啟檢視、暫停、切換狀態或輸入方式 → 0.8 秒平滑退回。
 // * 沒有震動回饋（震動＝驚嚇）。所有出現/消失都是 ≥ 0.4 秒的淡入淡出。
 // =============================================================================
 import { injectStyle, uiRoot, el } from './uiCommon.js';
@@ -28,6 +31,10 @@ const STICK_DEAD = 0.2;
 const STICK_FOLLOW = 1.5;     // 手指超過半徑的倍數時底座跟著移動
 const PORTRAIT_MIN_HFOV = 62; // 度
 const PORTRAIT_MAX_VFOV = 100;
+const LEAN_VFOV = 38;         // 湊近看：目標垂直視角（度）
+const LEAN_MIN_HFOV = 46;     // 湊近看：水平視角至少這麼寬（直向時 CRT 整個寬度（約 42°）仍在畫面內）
+const LEAN_S = 0.8;           // 湊近／退回的時間（秒；畫面亮度變化緩慢）
+const LEAN_REACH = 3.2;       // m：只有這個距離內的監視器可以湊近
 const evTime = (e) => { const t = Number(e?.timeStamp); return t > 0 && t < performance.now() + 1000 ? t : performance.now(); };
 const SCROLLERS = '.bs-title, .bs-pause, .bs-insp__body, .bs-end, .bs-error, input, label';
 
@@ -146,6 +153,8 @@ export class TouchControls {
     this.lookId = null;
     this._baseFov = ctx.camera?.fov || 70;
     this._vis = { ghost: null, pause: null };
+    this._lean = { on: false, k: 0, state: null };
+    this._leanRay = null;
     // 測試用：?tapms=N 放寬點擊時間（SwiftShader 下每個觸控事件要等一幀才送達）
     this._tapMs = Number(ctx.params?.get?.('tapms')) || TAP_MS;
 
@@ -198,11 +207,11 @@ export class TouchControls {
     });
 
     ctx.bus.on('input:mode', ({ touch } = {}) => {
-      if (!touch) this._releaseAll();
+      if (!touch) { this._releaseAll(); this._leanOff(); }
       try { if (ctx.inspect?.isOpen) ctx.inspect.syncHints?.(); } catch (e) { /* ignore */ }
     });
     ctx.bus.on('game:paused', () => this._releaseAll());
-    ctx.bus.on('inspect:open', () => this._releaseStick());
+    ctx.bus.on('inspect:open', () => { this._releaseStick(); this._leanOff(); });
     // 旋轉螢幕／視窗大幅改變：手指還按著的話，舊座標已經沒有意義 → 放開所有觸控（避免視角在一幀內跳動、搖桿中心錯位）
     this._lastSize = { w: window.innerWidth, h: window.innerHeight };
     ctx.bus.on('resize', () => {
@@ -225,7 +234,57 @@ export class TouchControls {
     const aspect = w / h;
     const tanH = Math.tan((PORTRAIT_MIN_HFOV * Math.PI) / 360);
     const v = (2 * Math.atan(tanH / aspect) * 180) / Math.PI;
-    return Math.min(PORTRAIT_MAX_VFOV, Math.max(base, v));
+    const v0 = Math.min(PORTRAIT_MAX_VFOV, Math.max(base, v));
+    const k = this._lean.k;
+    if (!(k > 0)) return v0;
+    // 湊近看：收窄到 LEAN_VFOV（但水平視角至少 LEAN_MIN_HFOV）
+    const vMin = (2 * Math.atan(Math.tan((LEAN_MIN_HFOV * Math.PI) / 360) / aspect) * 180) / Math.PI;
+    const target = Math.min(v0, Math.max(LEAN_VFOV, vMin));
+    const e = k * k * (3 - 2 * k);
+    return v0 + (target - v0) * e;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 湊近看監視器
+  // ---------------------------------------------------------------------------
+  /** 點擊沒有用到可互動物件：已湊近 → 退回；點到監視器 → 湊近。回傳是否處理了這次點擊。 */
+  _leanTap(x, y) {
+    const ctx = this.ctx;
+    if (this._lean.on) { this._leanOff(); return true; }
+    if (!this.touch || ctx.inspect?.isOpen || ctx.clock?.paused || !ctx.player?.enabled || ctx.player?._lookTween) return false;
+    const objs = ctx.controlRoom?.objects;
+    const screens = [objs?.mainScreen, ...(objs?.sideScreens || [])].filter((o) => o && o.visible !== false);
+    const cam = ctx.camera, THREE = ctx.THREE;
+    if (!screens.length || !cam || !THREE) return false;
+    const rc = this._leanRay || (this._leanRay = new THREE.Raycaster());
+    const ndc = new THREE.Vector2((x / (window.innerWidth || 1)) * 2 - 1, -(y / (window.innerHeight || 1)) * 2 + 1);
+    cam.updateMatrixWorld();
+    rc.setFromCamera(ndc, cam);
+    rc.near = 0; rc.far = LEAN_REACH;
+    const hit = rc.intersectObjects(screens, false)[0];
+    if (!hit) return false;
+    const center = hit.object.getWorldPosition(new THREE.Vector3());
+    this._lean.on = true;
+    this._lean.state = ctx.fsm?.currentName ?? null;
+    try { ctx.player.lookAt?.(center, LEAN_S); } catch (e) { /* ignore */ }
+    return true;
+  }
+
+  _leanOff() { this._lean.on = false; }
+
+  /** 每幀：湊近的程度 0..1 以 LEAN_S 秒平滑移動；變化時更新主相機的視角。 */
+  _updateLean(dt) {
+    const ctx = this.ctx, L = this._lean;
+    if (L.on && (!this.touch || ctx.inspect?.isOpen || ctx.clock?.paused || !ctx.player?.enabled || this.stick
+      || (ctx.fsm?.currentName ?? null) !== L.state)) L.on = false;
+    const goal = L.on ? 1 : 0;
+    if (L.k === goal) return;
+    const step = Math.min(0.1, Math.max(0, Number(dt) || 0)) / LEAN_S;
+    L.k = goal > L.k ? Math.min(goal, L.k + step) : Math.max(goal, L.k - step);
+    const cam = ctx.camera;
+    if (!cam) return;
+    cam.fov = this.fovFor(window.innerWidth, window.innerHeight);
+    cam.updateProjectionMatrix();
   }
 
   // ---------------------------------------------------------------------------
@@ -328,6 +387,7 @@ export class TouchControls {
     if (p.role === 'look') {
       const ctx = this.ctx;
       if (ctx.inspect?.isOpen) { ctx.inspect.nudge?.(dx, dy); return; }
+      if (this._lean.on && p.moved >= TAP_SLOP) this._leanOff();   // 拖曳環顧＝退回
       const k = this._lookRadPerPx();
       ctx.player?.lookBy?.(dx * k, dy * k);
     } else if (p.role === 'stick' && this.stick?.id === e.pointerId) {
@@ -365,7 +425,9 @@ export class TouchControls {
     const ctx = this.ctx;
     if (ctx.clock?.paused) return;
     if (ctx.inspect?.isOpen) { ctx.inspect._requestClose?.(e); return; }   // 面板外點一下＝關閉（面板本身攔截自己的觸控）
-    try { ctx.interact?.tapAt?.(x, y); } catch (err) { console.warn('[touch] tap failed', err); }
+    let used = false;
+    try { used = !!ctx.interact?.tapAt?.(x, y); } catch (err) { console.warn('[touch] tap failed', err); }
+    if (!used) { try { this._leanTap(x, y); } catch (err) { console.warn('[touch] lean failed', err); } }
   }
 
   _lookRadPerPx() {
@@ -414,9 +476,10 @@ export class TouchControls {
   }
 
   // ---------------------------------------------------------------------------
-  update() {
+  update(dt) {
     const ctx = this.ctx;
     const touch = this.touch;
+    this._updateLean(dt);
     const canMove = touch && this._canMove();
     // 搖桿 → PlayerController.analog（類比：死區之外重新映射到 0..1）
     const a = ctx.player?.analog;
