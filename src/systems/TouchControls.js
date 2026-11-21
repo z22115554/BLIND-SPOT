@@ -50,7 +50,7 @@ html.bs-touch .bs-controls--touch { display: flex; }
 /* ---------- 觸控模式：安全區＋HUD 版面 ---------- */
 html.bs-touch .bs-obj { left: calc(max(1.4em, 3.2vw) + env(safe-area-inset-left, 0px)); top: calc(max(1.3em, 4.4vh) + env(safe-area-inset-top, 0px));
   width: min(24em, 46vw); }
-html.bs-touch .bs-hint { top: calc(max(1.4em, 6.2vh) + env(safe-area-inset-top, 0px)); max-width: min(30em, 62vw); }
+html.bs-touch .bs-hint { top: calc(max(1.4em, 6.2vh) + env(safe-area-inset-top, 0px)); max-width: min(30em, 62vw); text-wrap: balance; }
 @media (max-width: 640px) {   /* 直向窄螢幕：提示放在左上目標的下方（與桌機窄視窗相同的位置＋安全區） */
   html.bs-touch .bs-hint { top: calc(max(1.3em, 4.4vh) + 5.4em + env(safe-area-inset-top, 0px)); max-width: 90vw; }
   html.bs-touch .bs-obj { width: min(24em, 70vw); }
@@ -66,14 +66,16 @@ html.bs-touch .bs-prompt { bottom: calc(max(1.2em, 4vh) + env(safe-area-inset-bo
   border: 1px solid rgba(217, 212, 199, 0.26); border-radius: 3px; background: rgba(4, 4, 4, 0.5);
   pointer-events: auto; cursor: pointer; transition: opacity 0.4s ease, border-color 0.4s ease; }
 html.bs-touch .bs-prompt:not(.is-on) { pointer-events: none; }
-/* 直向：互動提示鈕移到右半邊（左下是搖桿區；拇指稍微落低時不會按到提示鈕） */
+/* 直向：互動提示鈕靠右下（左緣 ≥ 38vw，在搖桿提示圈（右緣約 33vw）的右邊；拇指稍微落低時不會按到提示鈕）；
+   字幕往上讓出兩行高的提示鈕 */
 @media (max-aspect-ratio: 1/1) {
   html.bs-touch .bs-prompt { left: auto; right: calc(0.9em + env(safe-area-inset-right, 0px)); transform: none;
-    max-width: calc(50vw - 0.9em - env(safe-area-inset-right, 0px)); }
+    max-width: calc(62vw - 0.9em - env(safe-area-inset-right, 0px)); }
 }
 html.bs-touch .bs-prompt:active { border-color: var(--bs-amber-soft); }
 html.bs-touch .bs-prompt .bs-key { min-width: 3.4em; height: 2.2em; font-family: var(--bs-ui); letter-spacing: 0.18em; border-color: var(--bs-amber-soft); }
 html.bs-touch .bs-subs { bottom: calc(max(1.2em, 4vh) + 5em + env(safe-area-inset-bottom, 0px)); }
+@media (max-aspect-ratio: 1/1) { html.bs-touch .bs-subs { bottom: calc(max(1.2em, 4vh) + 6.6em + env(safe-area-inset-bottom, 0px)); } }
 html.bs-touch .bs-debug { top: calc(0.6em + env(safe-area-inset-top, 0px)); right: calc(4.2em + env(safe-area-inset-right, 0px)); }
 
 /* ---------- 觸控模式：標題、暫停、結局、檢視 ---------- */
