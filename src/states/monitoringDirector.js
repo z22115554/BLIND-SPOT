@@ -27,9 +27,10 @@
 
 export const PACE = {
   SPM: 17,          // = CLOCK.secondsPerMinute = DWELL_MAX（ctor 的 spm 可覆寫；?spm=N）
-  DWELL_MIN: 11,    // 最早翻分鐘：自該分鐘 beatDoneAt 起算（非保護分鐘）
+  DWELL_MIN: 9,     // 最早翻分鐘：自該分鐘 beatDoneAt 起算（非保護分鐘）。final 修正：11 → 9（spec 的「還嫌慢」旋鈕；
+                    // 把按 CAM 鈕時低頭看控制台算進去後，11 / 3.5 的一般玩家這一幕和 ?pace=0 幾乎一樣長）
   DWELL0: 3,        // 02:00 上鎖閘門完成後最早翻分鐘（OSD 秒數通常早已停在 :59；不受 POST_HOLD 限制，m4a 仍受）
-  CALM: 3.5,        // 距離上一個 mark 至少這麼多秒才可以提早翻
+  CALM: 3,          // 距離上一個 mark 至少這麼多秒才可以提早翻（final 修正：3.5 → 3）
   RUSH: 1.0,        // 提早翻：OSD 秒數在這段時間內跑到 :59，然後翻
   RUSH_IN_DWELL: true, // true：衝刺可在 DWELL_MIN − RUSH 開始，翻分鐘最早正好落在 DWELL_MIN（＝「最早 11 秒翻」）；
                        // false：照 §4 偽碼字面，DWELL_MIN 之後才開始衝刺（最早 DWELL_MIN + RUSH 才翻，典型玩家約 +4 秒）
