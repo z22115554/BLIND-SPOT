@@ -53,6 +53,11 @@ html.bs-touch .bs-hint { top: calc(max(1.4em, 6.2vh) + env(safe-area-inset-top, 
   html.bs-touch .bs-hint { top: calc(max(1.3em, 4.4vh) + 5.4em + env(safe-area-inset-top, 0px)); max-width: 90vw; }
   html.bs-touch .bs-obj { width: min(24em, 70vw); }
 }
+/* 橫向手機（寬 ≤ 960）：置中的提示會壓到左上的目標文字 → 同樣放在目標下方、靠左對齊（避開瀏海安全區） */
+@media (max-width: 960px) and (min-aspect-ratio: 1/1) {
+  html.bs-touch .bs-hint { left: calc(max(1.4em, 3.2vw) + env(safe-area-inset-left, 0px)); transform: none; text-align: left;
+    top: calc(max(1.3em, 4.4vh) + 5.2em + env(safe-area-inset-top, 0px)); max-width: min(30em, 60vw); padding-left: 0; }
+}
 html.bs-touch .bs-prompt { bottom: calc(max(1.2em, 4vh) + env(safe-area-inset-bottom, 0px));
   max-width: min(40em, calc(100vw - 2.4em - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
   min-height: 44px; padding: 0.55em 1.3em 0.55em 0.75em; gap: 0.35em 0.75em;
