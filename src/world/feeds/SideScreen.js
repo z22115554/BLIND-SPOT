@@ -18,6 +18,8 @@ export class SideScreen {
   constructor(side, { w = 512, h = 384 } = {}) {
     this.side = side;
     this.w = w; this.h = h;
+    // 左側 SYS LOG：坐著的預設視角（16:9）會切掉螢幕左緣約 3 個字 → 標題與內文往右縮排，HH:MM 時間戳完整可見
+    this.indent = side === 'left' ? 60 : 0;
     const { canvas, g } = makeCanvas(w, h);
     this.canvas = canvas; this.g = g;
     this.texture = new THREE.CanvasTexture(canvas);
@@ -61,9 +63,10 @@ export class SideScreen {
     let size = 24;
     g.font = `bold ${size}px ${FONTS.mono}`;
     const clockW = this._clock ? 90 : 0;
-    while (g.measureText(title).width > w - mx * 2 - clockW - 10 && size > 11) { size--; g.font = `bold ${size}px ${FONTS.mono}`; }
+    const tx = mx + this.indent;
+    while (g.measureText(title).width > w - mx - tx - clockW - 10 && size > 11) { size--; g.font = `bold ${size}px ${FONTS.mono}`; }
     g.fillStyle = '#000';
-    g.fillText(title, mx, top + barH / 2 + 1);
+    g.fillText(title, tx, top + barH / 2 + 1);
     if (this._clock) {
       g.font = `bold 22px ${FONTS.mono}`;
       g.textAlign = 'right';
@@ -78,19 +81,19 @@ export class SideScreen {
     const fs = Math.min(23, Math.floor(lh * 0.66));
     g.textBaseline = 'middle';
     g.fillStyle = '#fff';
-    let lastEnd = { x: mx, y: y0 };
+    let lastEnd = { x: tx, y: y0 };
     lines.forEach((line, i) => {
       let s = fs;
       g.font = `${s}px ${FONTS.mono}`;
-      while (g.measureText(line).width > w - mx * 2 - 22 && s > 10) { s--; g.font = `${s}px ${FONTS.mono}`; }
+      while (g.measureText(line).width > w - mx - tx - 22 && s > 10) { s--; g.font = `${s}px ${FONTS.mono}`; }
       const y = y0 + i * lh + lh / 2;
-      g.fillText(line, mx, y);
-      lastEnd = { x: mx + g.measureText(line).width, y, s };
+      g.fillText(line, tx, y);
+      lastEnd = { x: tx + g.measureText(line).width, y, s };
     });
     this.texture.needsUpdate = true;
     // 游標（最後一行之後的方塊；由 shader 緩慢呼吸）
     const cs = lastEnd.s || fs;
-    const cx0 = lines.length ? lastEnd.x + 8 : mx;
+    const cx0 = lines.length ? lastEnd.x + 8 : tx;
     const cy = lines.length ? lastEnd.y : y0 + lh / 2;
     const cw = cs * 0.55, ch = cs * 0.9;
     this.material.uniforms.uCursor.value.set(cx0 / w, 1 - (cy + ch / 2) / h, (cx0 + cw) / w, 1 - (cy - ch / 2) / h);
