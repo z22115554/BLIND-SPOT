@@ -180,6 +180,8 @@ const CSS = `
      linear() 精確描述該曲線；不支援的瀏覽器退回近似的 cubic-bezier。此規則是「淡出」用（亮度回升）。 */
   transition-timing-function: cubic-bezier(0.55, 0.06, 0.82, 0.55);
   transition-timing-function: linear(0, 0.044, 0.095, 0.155, 0.226, 0.309, 0.407, 0.521, 0.656, 0.814, 1); }
+/* 淡出中（已恢復遊戲）不再攔截觸控／點擊：手機上恢復後的第一個拖曳是環顧，不會拖到音量滑桿 */
+.bs-pause:not(.is-on) { pointer-events: none; }
 .bs-pause.is-on { opacity: 1;
   transition-timing-function: cubic-bezier(0.18, 0.45, 0.45, 0.94);
   transition-timing-function: linear(0, 0.186, 0.344, 0.479, 0.593, 0.691, 0.774, 0.845, 0.905, 0.956, 1); }
