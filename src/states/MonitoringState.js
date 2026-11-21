@@ -59,7 +59,7 @@ export class MonitoringState extends StoryState {
       const q = ctx.params?.get?.('clock');
       if (q && /^\d\d:\d\d$/.test(q)) start = clamp(minuteOf(q), 0, 13);
     }
-    if (ctx.feeds) ctx.feeds.subPoses = pf.subposes;
+    if (ctx.feeds) { ctx.feeds.subPoses = pf.subposes; ctx.feeds.trailOn = pf.pace; }
     if (pf.pace) this.director = this.makeDirector();
     if (direct) {
       if (start > 0) this.applySkipped(start);

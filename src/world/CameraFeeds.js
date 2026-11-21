@@ -116,6 +116,8 @@ export class CameraFeeds {
     this._guardWarnAt = -1e9;
     /** 上限內的「微姿勢」（spec §3.4）；?subposes=0 由 MonitoringState 關閉 */
     this.subPoses = true;
+    /** ?pace=0（改版前的流程）時 false：CAM-03 的濕拖痕不隨人影延長（其餘第 0 階段的固定佈景照舊） */
+    this._trailOn = true;
     this.figureSub = false;
     this._shownSub = false;
     this._kStale = false;
@@ -318,6 +320,12 @@ export class CameraFeeds {
   }
   /** 房間時鐘的 HH:MM:SS（秒數依 flags.minuteK；與 OSD 時間戳相同）。 */
   clockStamp() { return this._timestamp(this.ctx.clock?.time ?? this._t); }
+  get trailOn() { return this._trailOn; }
+  set trailOn(v) {
+    this._trailOn = !!v;
+    const c3 = this.channels?.[3];
+    if (c3) { c3.trailOn = this._trailOn; this._applyFigure(); }
+  }
   /** 重置（循環重來）：頻道 3、人影 index 0、hdSeen 清空、模式 LD。 */
   reset() {
     this._bootToken++;

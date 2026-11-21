@@ -516,9 +516,12 @@ export class Cam03 extends FeedChannel {
   setFigurePose(i, sub = false) {
     this.figure.setPose(i, sub);
     const idx = this.figure.index;
-    if (this.trail && idx !== this._trailIndex) {
+    // trailOn = false（?pace=0：改版前的流程）時不顯示拖痕
+    const on = this.trailOn !== false;
+    if (this.trail && (idx !== this._trailIndex || on !== this._trailOnApplied)) {
       this._trailIndex = idx;
-      this.trail.reach(idx >= 2 ? FIGURE_WAYPOINTS[idx].z - 0.35 : null);
+      this._trailOnApplied = on;
+      this.trail.reach(on && idx >= 2 ? FIGURE_WAYPOINTS[idx].z - 0.35 : null);
     }
     const w = FIGURE_WAYPOINTS[this.figure.index];
     const lamp = this.farLamp.position;

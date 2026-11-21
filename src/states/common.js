@@ -547,7 +547,7 @@ export function resetWorld(ctx, opts = {}) {
   T(() => fd?.reset?.(), 'feeds.reset');
   T(() => fd?.setHDAction?.(false));
   setLimits(ctx, 0, 0);
-  if (fd) { fd.brightness = 1; fd.subPoses = paceFlags(ctx).subposes; }
+  if (fd) { fd.brightness = 1; fd.subPoses = paceFlags(ctx).subposes; fd.trailOn = paceFlags(ctx).pace; }
   setLeftLog(ctx, ctx.CLOCK.start, 'normal');
   setRight(ctx, 'normal', 'normal');
 
