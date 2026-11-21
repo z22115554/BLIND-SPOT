@@ -6,9 +6,13 @@
 > 1. **監視系統的「動態偵測」**：每分鐘最多一次，控制台 CAM 按鈕亮琥珀燈並響一聲輕柔的提示音，把你從 CAM-03 拉走；那個頻道的畫面在你沒看的時候變了。你一離開 CAM-03，他就可能往前一步。
 > 2. **每一個變化都是第三幕高清真相的一小片**，就放在同一個位置：關上的車門、封閉號誌、拱頂下的黑煙、熱源裡的油罐車剪影、焦痕、時間停在 02:14:08。
 > 3. **02:00 由你親手鎖死防爆門**（便利貼叫你做的），以及 **02:05 拉下通風拉桿後，防爆門傳來悶悶的敲門聲**，而此時 CAM-03 上的他還在走廊中段。
-> 4. **安靜的分鐘會提早結束**（最少 11 秒），但 02:10 的通風衰弱、02:12 的聽覺真空長度完全不動。
+> 4. **安靜的分鐘會提早結束**（最少 11 秒；final 修正後 9 秒），但 02:10 的通風衰弱、02:12 的聽覺真空長度完全不動。
 >
-> 結果：一般玩家約 **4 分 25 秒**；除了刻意保留的 02:12 真空，最長空檔約 18–20 秒（在 02:10 通風衰弱的那一分鐘），其他時間都在 12 秒以內。
+> 結果（原估計）：一般玩家約 **4 分 25 秒**；除了刻意保留的 02:12 真空，最長空檔約 18–20 秒（在 02:10 通風衰弱的那一分鐘），其他時間都在 12 秒以內。
+>
+> **final 修正（2026-11-21）**：原估計沒有算到「滑鼠玩家要低頭把準心對到控制台按鈕才能切頻道」。算進去之後，瀏覽器自動駕駛的
+> 一般玩家這一幕是 **約 4 分 52 秒**（改版前 `?pace=0` 同條件 5 分 04 秒）：**長度只短了約 4%，改變的是「空檔」**——
+> 最長空檔從 34 秒降到 20 秒，每分鐘都有事。詳見 DESIGN-NOTES E7。
 > 原企劃文案一字不動；gate 結構、GATE_LIMITS、「先看見再移開才會動」規則都不變。
 
 Status: FINAL, implementation-ready. Implement **after** the fix-pass worktrees are merged (`fix-systems`, `wf_9ca3cbda-0e3-1`, `wf_9ca3cbda-0e3-2`). Design against the current APIs and keep every diff additive. Before editing, re-read `CameraFeeds._beginSwitch/_meanOf/FEED_LUM` and `common.playIntercom`, because the fix pass touched both.
@@ -711,5 +715,5 @@ All three start from the merged main. Phase 0 (all, 15 min): read this spec and 
 1. **The 02:00 lock gate** [on; `?lock=0` to disable]. It changes the first minute and the loop's start state.
 2. **The Act-3 timestamp correction 02:11 → 02:05** [applied; 2 characters to revert]. Moving the vent lever itself to 02:11 was rejected for this pass.
 3. **Sub-poses** [on, subtle; `?subposes=0`]. Is CAM-03 change frequency right, or too much?
-4. **Act length** [≈ 4:25 typical]. Use `DWELL_MIN` to trade length for breathing room.
+4. **Act length** [≈ 4:25 typical in the sim; ≈ 4:52 in the browser autopilot once the look-down to press a CAM button is modelled, vs 5:04 for `?pace=0` — see DESIGN-NOTES E7]. Use `DWELL_MIN` to trade length for breathing room.
 5. **The `01:58:41` stamp** on the first CAM-04 alert and the cross-channel `▲ CAM-0n` OSD line on the watched screen [both on]. Does either feel too "UI"?

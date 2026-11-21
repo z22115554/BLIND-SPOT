@@ -26,12 +26,15 @@ src/
   index.html              單檔 HTML 模板（build 時內嵌 bundle）
   core/  EventBus.js  GameClock.js（可暫停的遊戲時間）  StateMachine.js（+BaseState）  Settings.js  util.js
          resolution.js（ResolutionGovernor：慢幀時自動降解析度）
+         input.js（InputMode：觸控 ↔ 滑鼠鍵盤、looksLikeTouchDevice()）
+         quality.js（detectQuality / applyQuality / rendererQuality：手機畫質預設）
   data/  script.js（全部文案，唯一文字來源）  layout.js（全部座標，唯一座標來源）
   gfx/   canvasUtil.js（噪音/污漬/手寫字等 Canvas 工具）  TextureFactory.js  PostFX.js  shaders/CRTShader.js
   audio/ AudioEngine.js（可拆 audio/*.js 輔助檔）
   world/ ControlRoom.js  Corridor.js  CameraFeeds.js  Figure.js  （可拆輔助檔）
          feeds/ channels.js（CAM-01～04 場景）anomalies.js（LD 微事件各階段）OSD.js  SideScreen.js  props.js  feedTextures.js
   systems/ PlayerController.js  Interaction.js  GazeSystem.js  InspectView.js  Subtitles.js  UI.js
+           TouchControls.js（手機／平板：拖曳環顧、浮動搖桿、點擊互動、暫停鈕、湊近看監視器、直向視角）
   states/ index.js  common.js  TitleState.js  PrologueState.js  MonitoringState.js
           monitoringDirector.js（監看段落的節奏導演：純邏輯、零 import，node 模擬直接使用）
           BlackoutCorridorState.js  RevelationState.js  EndingLoopState.js
@@ -66,6 +69,9 @@ ctx = {
   textures, audio, ui, subtitles, postfx, controlRoom, corridor, feeds, player, interact, gaze, inspect, fsm,
   setPaused(bool),
   resolution,                            // ResolutionGovernor（?pr=N 固定像素比、?adaptive=0 關閉；webdriver 下自動關閉）
+  input,                                 // InputMode { touch, everTouch, set(bool), isTouchPointer(e), downWhileLocked(e) }
+  quality,                               // { tier: 'desktop' | 'mobile', ...旋鈕 }（桌機什麼都不改；?quality=mobile|desktop 強制）
+  touchControls,                         // TouchControls { fovFor(w,h), enterImmersive(), update(dt) }
   precompile({sync, warm}) → Promise,    // 預編譯所有著色器＋上傳貼圖；開機時呼叫一次。之後若新增 mesh/材質，在黑畫面時呼叫
   director,                              // 只在 ?debug=1 且監看中：MonitoringDirector（dump()/fire(id)/forceFlip()/trace）
 }
@@ -81,6 +87,23 @@ ctx = {
   每個步驟各自 try/catch：失敗只記錄一次、下一幀照常排程；同一步驟連續失敗 240 幀才顯示錯誤畫面。
 * 畫面全黑（`postfx.isBlack()`，fade ≥ 0.999）時不渲染 3D 場景與監視器。
 * 開機分步進行（每步之間讓出一幀，先畫出「載入中…」），預編譯完成才進標題；`?autostart=1` 同步開機（測試用）。
+
+### 4.1 觸控／手機（mobile 分支＋final 修正）
+* **輸入方式** `ctx.input`（`core/input.js`）：初始依裝置（主要指標 coarse 且沒有 fine 指標，或 coarse ＋行動 UA → 觸控）；
+  之後依實際輸入切換：手指按下 → 觸控；真正的滑鼠按下／移動 ≥ 8 px（距上次觸控 ≥ 0.8 秒）或遊戲按鍵 → 滑鼠鍵盤。
+  觸控筆只在手機／平板上算觸控，桌機的繪圖板／Surface 筆當作滑鼠。觸控模式時 `<html>` 有 class `bs-touch`，
+  **所有觸控專用樣式都掛在 `html.bs-touch` 底下**，桌機外觀完全不變。在按下的手勢中切換時，class 延到該手勢的 click
+  （或放開後 0.35 秒）才套用，版面不會在手指底下跳動。`everTouch`：這台裝置用過觸控（直向視角、切回滑鼠時重新鎖定指標）。
+* **畫質** `ctx.quality`（`core/quality.js`）：手機／平板＝像素比上限 1.25、較寬鬆的自動解析度門檻、PCF 陰影、
+  監視器 render target 480×360 無 MSAA、粒子上限、OSD 動態偵測文字放大（`osd.big`）。燈光數量與場景內容不變。
+* **TouchControls**（`systems/TouchControls.js`）：拖曳環顧（弧度/像素 = 1.25 × 基本垂直視角 ÷ 視窗短邊 × 靈敏度）、
+  左側浮動搖桿（→ `PlayerController.analog`）、點擊（< 10 px、< 0.45 秒）→ `Interaction.tapAt`、右上暫停鈕、
+  點監視器湊近看（0.8 秒收窄到 38°）、直向放寬垂直視角（`fovFor`）。指標鎖定中的第一次觸控（座標被凍結成 0,0）
+  等第一個 move 才定起點；單一事件位移 > 視窗長邊 30% 視為重新起點；旋轉螢幕時放開所有觸控。
+* 其他模組的觸控掛鉤：`PlayerController.analog {x,z}`、`lookBy(dYaw, dPitch)`、`canMove()`；
+  `Interaction.tapAt(x, y) → bool`、`pickAt(x, y, far?)`、`useCurrent() → bool`；`InspectView.nudge(dx, dy)`、`syncHints()`；
+  `UI.menuVisible()`、`UI.hintVisible()`。觸控文案全部在 `SCRIPT.touch`（【補充文案】）。
+* 黃金規則照舊：沒有震動回饋、所有觸控介面的出現/消失 ≥ 0.4 秒、視角變化都是平滑的（湊近／退回 0.8 秒）。
 
 ## 5. 事件（bus）
 
@@ -101,6 +124,7 @@ ctx = {
 | `feeds:hdSeen` | `{channel}` | CameraFeeds |
 | `feeds:axeHit` | `{}` | CameraFeeds（HD 劈砍動作擊中門的瞬間；狀態據此播放隔門悶響） |
 | `resize` | `{w,h}` | main |
+| `input:mode` | `{touch}` | InputMode（輸入方式切換；在觸發的輸入事件內同步發出，監聽者可在同一手勢內要求指標鎖定） |
 | 劇情用（States 自訂）| `intercom:answer`、`vent:restart`、`flashlight:take`、`sideDoor:open`、`breaker:pull`、`unlock:press`、`blastDoor:lock`（02:00 上鎖閘門中的防爆門互動）| states/common.js |
 
 ## 6. 空間配置（詳見 `src/data/layout.js`）
@@ -147,7 +171,10 @@ TITLE ─click→ STATE_PROLOGUE ─讀便利貼→ STATE_MONITORING ─02:14→
 * **時鐘＝輕量注意力時鐘**：每個節拍（閘門）完成後最長 `CLOCK.secondsPerMinute`（17）遊戲秒翻下一分鐘；
   非保護分鐘在「沒事可做」時（沒有 hold、沒有檢視、沒有未查看的警示、這一分鐘的事件都發生了、距上一個事件 ≥ 3.5 秒）
   最早 11 秒翻（OSD 秒數在 1 秒內跑到 :59 再翻，永不倒退）。**02:10 / 02:11 / 02:12 永遠是 17 秒**。
-  閘門分鐘時鐘停住直到事件完成（冒號照常閃）。常數全部在 `monitoringDirector.js` 的 `PACE`。
+  閘門分鐘時鐘停住直到事件完成（冒號照常閃）。02:00 上鎖閘門完成後最早 3 秒（`DWELL0`，加上 3.5 秒的 CALM）就翻到 02:01
+  （玩家已經在這一分鐘裡走去上鎖；m4a 仍等 POST_HOLD 6 秒）。CAM-03 的警示只是回報，不擋提早翻分鐘。
+  同一個時鐘分鐘內 OSD 秒數永不倒退（`CameraFeeds._timestamp` 守下限：序幕走到 :59 後進入監看，停在 :59 直到 02:01）。
+  常數全部在 `monitoringDirector.js` 的 `PACE`。
 * **導演** `MonitoringDirector`（`monitoringDirector.js`，零 import）：`MonitoringState` 提供 `sense()`（讀世界）與 `io`（改世界），
   導演負責 `canFlip`、微事件排程 `SCHEDULE`、VMD 提示、CAM-03 延遲警示、02:05 敲門、一次性提示。
 * 閘門與人影上下限（index 0..7）：
@@ -175,7 +202,8 @@ TITLE ─click→ STATE_PROLOGUE ─讀便利貼→ STATE_MONITORING ─02:14→
   被警示頻道的 OSD 標籤 `▲ 動態偵測 HH:MM:SS`、SYS LOG 一行、互動提示「切換至 CAM-0n（動態偵測）」。注視 1.0 秒＝已查看。
   兩個有提示的事件至少間隔 11 秒；延後 ≥ 2 分鐘或基準沒看過（`needsBaseline`）的事件改為無提示套用。
 * **CAM-03 延遲警示**：人影推進時玩家沒在看 → 3–6 秒後 CAM-03 也出現動態偵測（只有燈、文字、日誌，沒有提示音）；
-  玩家已經回來看、hold 中或 02:12 之後則取消。
+  玩家已經回來看、hold 中或 02:12 之後則取消。CAM-03 當時就顯示在主螢幕、玩家人在座位（只是低頭按 CAM 鈕、看時鐘或側螢幕）
+  時不排警示——變化就在畫面上等他抬頭（`sense().atDesk`；否則每次查看別的頻道之後幾秒都會固定跳出 `▲ CAM-03`）。
 * **02:05 敲門**：拉桿完成 3 秒後，玩家看著 CAM-03 ≥ 1 秒（或 +13 秒）時：`doorKnock` 三下 → 2.4 秒後兩下 → 1 秒後
   SYS LOG `02:05 防爆門 震動感測`、`flags.doorKnocked`。玩家距門 < 2.5 m、通話或檢視中不敲；+16.5 秒還沒敲就放棄。
 * 對講機字幕：`subtitles.show('', {speaker})`，再依 `segments` 逐段 `append(text)` 並等待 `dur`；最終畫面字串 = 原企劃全文。
@@ -183,7 +211,8 @@ TITLE ─click→ STATE_PROLOGUE ─讀便利貼→ STATE_MONITORING ─02:14→
   右＝機電狀態（`SCRIPT.status.*`；上鎖閘門開啟且尚未上鎖時 `normal` 顯示為 `normalUnlocked`）。
 * 世界狀態：`resetWorld`（序幕與循環開始）把防爆門設為未上鎖；BLACKOUT / REVELATION / ENDING 的直接進入預設為上鎖。
 * 直接進入：`?clock=02:08` 從該分鐘開始（`director.fastForward`：之前的微事件階段、上鎖、SYS LOG 行都瞬間補上，不發提示）。
-* 除錯：`?pace=0`（改版前的流程）、`?lock=0`、`?subposes=0`、`?spm=N`、`?seed=N`、`?pacelog=1`（每分鐘一行 `[pace]`＋停電前摘要表）；
+* 除錯：`?pace=0`（改版前的流程；CAM-03 拖痕也不延長，但第 0 階段的固定佈景與 02:11 → 02:05 的文案仍是新版）、`?lock=0`、
+  `?subposes=0`、`?spm=N`、`?seed=N`、`?pacelog=1`（每分鐘一行 `[pace]`＋停電前摘要表）；
   `?debug=1` 時 `BS.director`、`window.__paceLog`。
 
 #### 監視器微事件與相關 API
@@ -243,14 +272,21 @@ node scripts/shot.mjs --html /path/x.html --state MONITORING --wait 4 --out /pat
   `?speed=4` 遊戲時間加速（遊戲時鐘每幀 dt 上限 0.1 秒 × speed）。
 * 監看節奏：`?clock=02:08`（MONITORING 從該分鐘開始）、`?pace=0`、`?lock=0`、`?subposes=0`、`?spm=N`、`?seed=N`、`?pacelog=1`（見 §8）。
 * 效能：`?pr=N` 固定像素比、`?adaptive=0` 關閉自動降解析度。
+* 觸控：`?touch=1|0` 強制輸入方式、`?quality=mobile|desktop` 強制畫質預設、`?tapms=N` 放寬點擊時間（SwiftShader 下每個觸控事件
+  要等一幀才送達；真實像素比的測試需要 `?tapms=30000`）。Playwright：`browser.newContext({...devices['iPhone 13']})`
+  或橫向 `{viewport:{width:844,height:390}, isMobile:true, hasTouch:true, deviceScaleFactor:3}`；點擊用 `page.touchscreen.tap`，
+  拖曳與多點觸控用 CDP `Input.dispatchTouchEvent`（touchStart / touchMove / touchEnd）。
+  `page.evaluate(() => BS.inspect.open(...))` 會卡住（open() 在關閉時才 resolve），請包在區塊裡不要 return 它。
+  注意：根目錄沒有 `index.html` 時 `git checkout -- dist index.html` 什麼都不做，請用 `git checkout -- dist`。
 * 截圖檔可用 Read 工具直接看圖。headless 使用 SwiftShader，幀率低是正常的。
 
 ```bash
 node scripts/smoke-test.mjs                                   # 讀 dist/blind-spot.html：六個狀態各截一張圖、檢查 console 錯誤
-node scripts/pacing-sim.mjs [--runs 200] [--persona all|eager|typical|starer|passive] [--table] [--seed N]
+node scripts/pacing-sim.mjs [--runs 200] [--persona all|eager|typical|starer|passive] [--table] [--seed N] [--glance 0.7]
                                                               # 節奏 node 模擬（直接 import 導演與 script.js；斷言失敗 exit 1）
-node scripts/pacing-run.mjs --html x.html [--speed 4] [--persona typical] [--runs 1] [--size 480x270] [--query lock=0]
+node scripts/pacing-run.mjs --html x.html [--speed 4] [--persona typical] [--runs 1] [--size 480x270] [--query lock=0] [--glance 0.7]
                                                               # 瀏覽器自動駕駛：這一幕長度、最長空檔、提示數、盲區違規、錯誤
+                                                              # （每次按 CAM 鈕前先低頭看控制台 0.7 秒，和真人一樣；--glance 0 是舊行為）
 node scripts/feed-stages.mjs --html x.html [--only 1,3] [--merge] [--write]
                                                               # 每個微事件階段的截圖、對照表 sheet.png、實測 MEAN_SCALE（--write 寫回 anomalies.js）
 ```
