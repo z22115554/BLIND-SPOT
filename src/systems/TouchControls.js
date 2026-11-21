@@ -2,7 +2,8 @@
 // TouchControls — 手機／平板的觸控操作（只在觸控模式 ctx.input.touch 時作用；桌機完全不受影響）
 // -----------------------------------------------------------------------------
 // * 環顧：在畫面上（不是介面元件的地方）拖曳，方向同滑鼠（手指往右＝轉向右，行動 FPS 慣例）。
-//   弧度/像素 = 1.25 × 垂直視角 ÷ 視窗高度（橫向與直向手感一致）× 設定的靈敏度；直接套用、沒有慣性、沒有吸附；俯仰限制與滑鼠相同（PlayerController.lookBy）。
+//   弧度/像素 = 1.25 × 垂直視角（直向時用橫向的基本視角）÷ 視窗短邊 × 設定的靈敏度；直接套用、沒有慣性、沒有吸附；
+//   俯仰限制與滑鼠相同（PlayerController.lookBy）。單一事件位移超過視窗長邊 30% 時視為重新起點（不轉動）。
 // * 移動：浮動虛擬搖桿——拇指落在左側區域（橫向：左 40%；直向：左半、下半）時在落點出現；類比、死區 20%；
 //   手指拉超過 1.5 倍半徑時底座跟著滑過去。只有玩家能移動時才會出現（PlayerController.canMove()：
 //   劇情過場、檢視、暫停時不出現，該區域的觸控改為環顧）；坐著時推動搖桿＝按下移動鍵（平滑站起後才走）。
@@ -348,8 +349,9 @@ export class TouchControls {
   }
 
   _lookRadPerPx() {
-    const fov = ((this.ctx.camera?.fov || 70) * Math.PI) / 180;
-    const h = Math.max(200, window.innerHeight || 600);
+    // 以視窗短邊與橫向的視角計算：直向（短邊＝寬、視角放寬到 ~100°）時不會變得太慢（iPhone SE 直向整個寬度 ≈ 88°），橫向不變
+    const fov = ((Math.min(this.ctx.camera?.fov || 70, this._baseFov || 70)) * Math.PI) / 180;
+    const h = Math.max(200, Math.min(window.innerWidth || 800, window.innerHeight || 600));
     const sens = Number(this.ctx.settings?.get?.('sensitivity'));
     return (LOOK_GAIN * fov / h) * (Number.isFinite(sens) && sens > 0 ? sens : 1);
   }
