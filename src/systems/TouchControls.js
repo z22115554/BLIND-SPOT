@@ -65,6 +65,11 @@ html.bs-touch .bs-prompt { bottom: calc(max(1.2em, 4vh) + env(safe-area-inset-bo
   border: 1px solid rgba(217, 212, 199, 0.26); border-radius: 3px; background: rgba(4, 4, 4, 0.5);
   pointer-events: auto; cursor: pointer; transition: opacity 0.4s ease, border-color 0.4s ease; }
 html.bs-touch .bs-prompt:not(.is-on) { pointer-events: none; }
+/* 直向：互動提示鈕移到右半邊（左下是搖桿區；拇指稍微落低時不會按到提示鈕） */
+@media (max-aspect-ratio: 1/1) {
+  html.bs-touch .bs-prompt { left: auto; right: calc(0.9em + env(safe-area-inset-right, 0px)); transform: none;
+    max-width: calc(50vw - 0.9em - env(safe-area-inset-right, 0px)); }
+}
 html.bs-touch .bs-prompt:active { border-color: var(--bs-amber-soft); }
 html.bs-touch .bs-prompt .bs-key { min-width: 3.4em; height: 2.2em; font-family: var(--bs-ui); letter-spacing: 0.18em; border-color: var(--bs-amber-soft); }
 html.bs-touch .bs-subs { bottom: calc(max(1.2em, 4vh) + 5em + env(safe-area-inset-bottom, 0px)); }
