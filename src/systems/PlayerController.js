@@ -152,7 +152,17 @@ export class PlayerController {
     ctx.bus.on('settings:change', () => this._readSettings());
     // 觸控：放開指標鎖定（觸控與指標鎖定互斥）
     ctx.bus.on('input:mode', ({ touch } = {}) => {
-      if (!touch) return;
+      if (!touch) {
+        // 混合裝置：觸控 → 滑鼠（移動滑鼠或按鍵切換）時指標還沒鎖定，要點一下畫布才能環顧 → 用既有文案提示
+        // （同一個滑鼠按下手勢觸發的切換會直接在 _onMouseDown 重新鎖定，不需要提示）
+        if (!this.isLocked && !this.dragMode && this.enabled && !ctx.clock.paused && ctx.fsm?.currentName !== ctx.STATES.TITLE) {
+          setTimeout(() => {
+            if (this.isLocked || this._lockPending || ctx.input?.touch || ctx.clock.paused || ctx.ui?.hintVisible?.()) return;
+            try { ctx.ui?.hint?.(ctx.SCRIPT.pause?.resume, 4); } catch (e) { /* ignore */ }
+          }, 250);
+        }
+        return;
+      }
       if (this.isLocked) this.unlock();
       this._drag = null;
     });

@@ -38,6 +38,7 @@ export class InputMode {
     this.everTouch = this.touch;
     this.lastTouchAt = 0;
     this._mouse = null;     // { x, y, acc }
+    this._lockedDowns = new WeakSet();
     this._apply();
 
     const opts = { capture: true, passive: true };
@@ -53,8 +54,15 @@ export class InputMode {
     this.set(true);
   }
 
+  /** 這個 pointerdown 發生時指標仍鎖定著（Chromium 此時回報 clientX/Y = 0,0：TouchControls 等第一個 move 再取座標）。 */
+  downWhileLocked(e) { return !!e && this._lockedDowns.has(e); }
+
   _onPointerDown(e) {
-    if (e.pointerType === 'touch' || e.pointerType === 'pen') { this._touched(); return; }
+    if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+      try { if (document.pointerLockElement) this._lockedDowns.add(e); } catch (err) { /* ignore */ }
+      this._touched();
+      return;
+    }
     if (e.pointerType === 'mouse' && performance.now() - this.lastTouchAt > MOUSE_AFTER_TOUCH_MS) this.set(false);
   }
 

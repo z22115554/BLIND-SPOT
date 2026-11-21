@@ -253,16 +253,27 @@ export class TouchControls {
     const x = e.clientX, y = e.clientY;
     // 時間用事件的 timeStamp（主執行緒忙碌、事件晚一點才處理時，點擊仍然算點擊）
     const p = { role: 'tap', x0: x, y0: y, x, y, t0: evTime(e), moved: 0 };
+    // 混合裝置：滑鼠指標鎖定中第一次觸控 → 這個事件的座標是 (0,0)（瀏覽器在鎖定中凍結座標）。
+    // 先不決定角色，等第一個 move（指標已解除鎖定、座標正確）再以那個位置為起點；沒有 move 就以 pointerup 的位置點擊。
+    let locked = false;
+    try { locked = !!document.pointerLockElement || !!this.ctx.input?.downWhileLocked?.(e); } catch (err) { /* ignore */ }
+    if (locked) { p.role = 'pending'; this.ptrs.set(e.pointerId, p); return; }
+    this._assignRole(p, e.pointerId, x, y);
+    this.ptrs.set(e.pointerId, p);
+  }
+
+  /** 決定觸控點的角色：搖桿（左側區域、能移動時）／環顧（同時只有一個）／點擊。 */
+  _assignRole(p, id, x, y) {
+    p.role = 'tap';
     if (!this.stick && !this.ctx.inspect?.isOpen && this._canMove() && this._stickZone(x, y)) {
       p.role = 'stick';
-      this.stick = { id: e.pointerId, cx: x, cy: y, kx: 0, ky: 0 };
+      this.stick = { id, cx: x, cy: y, kx: 0, ky: 0 };
       this._paintStick();
       this.stickEl.classList.add('is-on');
     } else if (this.lookId == null) {
       p.role = 'look';
-      this.lookId = e.pointerId;
+      this.lookId = id;
     }
-    this.ptrs.set(e.pointerId, p);
   }
 
   _onMove(e) {
@@ -270,9 +281,21 @@ export class TouchControls {
     if (!p) return;
     if (e.cancelable) e.preventDefault();
     const x = e.clientX, y = e.clientY;
+    if (p.role === 'pending') {          // 鎖定中按下的觸控：以第一個正確的座標為起點（這一次不環顧）
+      try { if (document.pointerLockElement) return; } catch (err) { /* ignore */ }
+      p.x0 = p.x = x; p.y0 = p.y = y;
+      this._assignRole(p, e.pointerId, x, y);
+      return;
+    }
     const dx = x - p.x, dy = y - p.y;
     p.x = x; p.y = y;
     p.moved = Math.max(p.moved, Math.hypot(x - p.x0, y - p.y0));
+    // 保險：單一事件的位移大於視窗長邊的 30%（座標跳動、旋轉螢幕時手指沒放開）→ 視為重新起點，不轉動視角
+    if (Math.abs(dx) > this._jumpPx() || Math.abs(dy) > this._jumpPx()) {
+      if (p.role === 'stick' && this.stick?.id === e.pointerId) { this.stick.cx = x; this.stick.cy = y; this.stick.kx = 0; this.stick.ky = 0; this._paintStick(); }
+      p.moved = Math.max(p.moved, TAP_SLOP);
+      return;
+    }
     if (p.role === 'look') {
       const ctx = this.ctx;
       if (ctx.inspect?.isOpen) { ctx.inspect.nudge?.(dx, dy); return; }
@@ -301,8 +324,12 @@ export class TouchControls {
     if (e.cancelable) e.preventDefault();
     if (p.role === 'stick') this._releaseStick();
     if (this.lookId === e.pointerId) this.lookId = null;
-    if (ok && p.moved < TAP_SLOP && evTime(e) - p.t0 < this._tapMs) this._tap(p.x, p.y, e);
+    // 'pending'（鎖定中按下、沒有 move）：pointerup 的座標已經正確
+    const tx = p.role === 'pending' ? e.clientX : p.x, ty = p.role === 'pending' ? e.clientY : p.y;
+    if (ok && p.moved < TAP_SLOP && evTime(e) - p.t0 < this._tapMs) this._tap(tx, ty, e);
   }
+
+  _jumpPx() { return 0.3 * Math.max(window.innerWidth || 800, window.innerHeight || 600); }
 
   _tap(x, y, e) {
     const ctx = this.ctx;

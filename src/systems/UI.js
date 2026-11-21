@@ -590,6 +590,9 @@ export class UI {
   }
 
   /** 暫時提示（操作說明等），seconds 後淡出。 */
+  /** 提示列目前是否顯示中。 */
+  hintVisible() { return !!this._hint?.on; }
+
   hint(text, seconds = 4) {
     if (text == null || text === '') { this._hint.left = 0; this._hint.on = false; reveal(this.hintEl, false, 700); return; }
     text = this._touchHint(text);
