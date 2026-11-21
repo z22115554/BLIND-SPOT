@@ -1,11 +1,13 @@
 // 監控段（02:00 → 02:14）節奏的瀏覽器量測（docs/pacing/spec.md §9.2）：headless Chromium + 自動駕駛玩家。
 //   node scripts/pacing-run.mjs [--html dist/blind-spot.html] [--speed 3] [--persona typical] [--runs 3] [--seed 1]
 //        [--size 960x540] [--query "lock=0&spm=17"] [--timeout-min 9] [--out test-output/pacing] [--no-assert] [--logs]
+//        [--glance 0.7]（按 CAM 按鈕前低頭看控制台按鈕的遊戲秒數；0 = 舊行為：看著 CRT 直接切頻道）
 // persona：eager | typical | starer（從不按 CAM 鈕）| passive（慢、忽略 60% 的提示）（參數與 pacing 原型 pace-proto.mjs 相同）
 //
 // 自動駕駛（每 100 ms 真實時間 page.evaluate 一次；所有時間都用遊戲時間 BS.clock.time）：
 //   坐姿 {x:0,z:-1.6,yaw:0,pitch:0.03,seated:true} 看著主 CRT（坐著卻沒被判定為注視主螢幕 → 中止並報錯）
 //   新的 CAM-01/02/04 警示：反應時間後 setChannel(n)，確認（ack）後再看 look 秒，回到 CAM-03
+//   每次切頻道：先把視線移到控制台上那顆按鈕 glance 秒（滑鼠玩家一定要這樣才按得到；GazeSystem 判定為沒在看 CRT），再按、再抬頭
 //   CAM-03 警示：切回 CAM-03
 //   flags.lockPending：走到防爆門 → bus 'blastDoor:lock' → 等 flags.blastLocked → 走回座位
 //   flags.intercomRinging：走到對講機 → 接聽 → 等通話結束 → 走回座位
@@ -37,6 +39,7 @@ const timeoutMin = Number(opt('timeout-min', 9));
 const outDir = path.resolve(root, opt('out', 'test-output/pacing'));
 const doAssert = !flag('no-assert');
 const showLogs = flag('logs');
+const GLANCE = Number(opt('glance', 0.7));
 
 // ---- persona（與 pace-proto.mjs 相同）------------------------------------------------------
 const PERSONAS = {
@@ -151,7 +154,16 @@ async function runOnce(browser, runIdx) {
     };
   });
   const teleport = (pose) => ev((p) => window.BS.player.teleport(p), pose);
-  const setCh = (n) => ev((n) => { window.BS.feeds.setChannel(n); window.BS.controlRoom?.pressCamButton?.(n - 1); }, n);
+  const setCh0 = (n) => ev((n) => { window.BS.feeds.setChannel(n); window.BS.controlRoom?.pressCamButton?.(n - 1); }, n);
+  const setCh = async (n) => {
+    if (!(GLANCE > 0)) return setCh0(n);
+    // 低頭看控制台上的按鈕（準心對準按鈕）→ glance 秒後按下 → 回到坐姿看 CRT
+    await ev((n) => { const B = window.BS, b = B.controlRoom.objects.camButtons[n - 1]; B.player.lookAt(b.getWorldPosition(new B.THREE.Vector3()), 0); }, n);
+    const g0 = await ev(() => window.BS.clock.time);
+    while ((await ev(() => window.BS.clock.time)) - g0 < GLANCE) await page.waitForTimeout(40);
+    await setCh0(n);
+    await teleport(POSE.seat);
+  };
 
   let task = null;                 // { kind, until, ... }
   let seatedSince = null;          // 坐回座位的遊戲時間（注視判定給 0.6 秒緩衝）
