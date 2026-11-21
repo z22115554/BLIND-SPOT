@@ -11,7 +11,7 @@
 // * 互動：短按（< 0.45 秒（事件時間戳）、位移 < 10 px）＝點擊 → Interaction.tapAt（點到的可互動物件；含容錯環）；
 //   拖曳永遠不會觸發互動。底部互動提示本身是按鈕（UI.js）。
 // * 檢視畫面開啟時：拖曳＝旋轉物件（InspectView.nudge）、在面板外點一下＝關閉；面板內文以手指捲動；✕ 關閉鈕。
-// * 暫停鈕：右上角（安全區內）44 px 觸控範圍，開啟既有的暫停/設定畫面。標題、結局選擇、名單、暫停中不顯示。
+// * 暫停鈕：右上角（安全區內）44 px 觸控範圍，開啟既有的暫停/設定畫面。標題、結局選擇、名單、暫停中、檢視中不顯示。
 // * 開始遊戲時（標題的點擊手勢內）嘗試全螢幕＋鎖定橫向（Android Chrome）；不支援（iPhone）時安靜略過。
 // * 直向：fovFor() 放寬垂直視角（最多 100°），讓水平視角至少約 62°，控制台與 CRT 仍完整可見（不拉伸）。
 // * 瀏覽器衛生：觸控模式下畫布 touch-action:none、阻止相容滑鼠事件、長按選單、iOS 雙指縮放（gesturestart）、
@@ -413,7 +413,9 @@ export class TouchControls {
     }
     const ghost = canMove && !this.stick;
     if (ghost !== this._vis.ghost) { this._vis.ghost = ghost; this.ghostEl.classList.toggle('is-on', ghost); }
-    const pause = touch && !!ctx.fsm && ctx.fsm.currentName !== ctx.STATES?.TITLE && !ctx.clock?.paused && !ctx.ui?.menuVisible?.();
+    // 檢視畫面開啟時也隱藏（側邊面板的 ✕ 與暫停鈕會緊貼在一起；先關閉檢視再暫停）
+    const pause = touch && !!ctx.fsm && ctx.fsm.currentName !== ctx.STATES?.TITLE && !ctx.clock?.paused && !ctx.ui?.menuVisible?.()
+      && !ctx.inspect?.isOpen;
     if (pause !== this._vis.pause) { this._vis.pause = pause; this.pauseEl.classList.toggle('is-on', pause); }
   }
 }
