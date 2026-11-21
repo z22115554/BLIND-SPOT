@@ -29,7 +29,7 @@ const C = (r, g, b) => new THREE.Color(r, g, b);
  */
 export const MEAN_SCALE = {
   1: [1, 1.02, 0.40],
-  2: [1, 1, 0.93, 0.92, 0.83],
+  2: [1, 0.95, 0.88, 0.88, 0.80],   // final 修正後重新量測（m2b 加強）
   3: [1, 0.92],
   4: [1, 0.97, 0.82],
 };
@@ -125,7 +125,8 @@ function install02(ch) {
     const s = new THREE.Sprite(mats[i % 3]);
     s.scale.set(9 + r() * 4, 3.2 + r(), 1);
     // 左、中、右輪替（兩側蓋住拱腳的燈列，中間蓋住拱頂下的熱源亮斑上緣）
-    s.position.set(((i % 3) - 1) * 3.2 + (r() - 0.5), 4.5 + r() * 0.8, z);
+    // 遠段（z ≤ −32，第 1 階段就出現）放低到 3.7–4.3 m，蓋住熱源亮斑的上緣（final 修正：放在 4.5 m 以上時室內 CRT 尺寸看不出來）
+    s.position.set(((i % 3) - 1) * 3.2 + (r() - 0.5), (z <= -32 ? 3.7 : 4.5) + r() * (z <= -32 ? 0.6 : 0.8), z);
     s.renderOrder = 5;
     s.userData.z = z;
     smoke.push(s);
@@ -151,14 +152,15 @@ function install02(ch) {
   ch.anomaly = { smoke, shells, sil };
 
   return (k) => {
-    const zMax = k >= 4 ? -4 : k >= 3 ? -16 : k >= 1 ? -40 : -Infinity;
+    // 第 1 階段（m2b）：煙帶推到 −32 m、遠處燈具的光暈被吞掉（spec §2）、熱源亮斑上緣明顯變暗
+    // （final 修正：原本 −40 m ＋ 亮斑 0.86 在室內 CRT 尺寸下 s0 / s1 看起來一樣，MEAN_SCALE 1.00）
+    const zMax = k >= 4 ? -4 : k >= 3 ? -16 : k >= 1 ? -32 : -Infinity;
     for (const s of smoke) s.visible = s.userData.z <= zMax;
     if (shells) shells.visible = k >= 2;
     for (const s of sil) s.visible = k >= 2;
-    for (const g of farGlows) g.visible = k < 2;
+    for (const g of farGlows) g.visible = k < 1;
     ch.ldLights[2].intensity = k >= 2 ? 8 : I2;
-    // 第 1 階段起，煙帶也壓暗一點熱源亮斑（整合時：只有煙帶的話，在 CRT 尺寸下 s0 → s1 幾乎看不出來）
-    ch.blobGain = k >= 4 ? 0.6 : k >= 3 ? 0.75 : k >= 1 ? 0.86 : 1;
+    ch.blobGain = k >= 4 ? 0.5 : k >= 3 ? 0.56 : k >= 1 ? 0.62 : 1;
   };
 }
 
