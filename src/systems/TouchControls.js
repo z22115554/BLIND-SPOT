@@ -201,10 +201,11 @@ export class TouchControls {
   // ---------------------------------------------------------------------------
   // 視角（直向放寬 FOV）
   // ---------------------------------------------------------------------------
-  /** 主相機的垂直視角（度）。桌機/橫向＝原值；觸控直向放寬到水平視角 ≥ 62°（垂直最多 100°）。 */
+  /** 主相機的垂直視角（度）。桌機/橫向＝原值；觸控裝置直向放寬到水平視角 ≥ 62°（垂直最多 100°）。
+   *  依「這台裝置用過觸控」（everTouch）而不是目前的輸入方式：直向的平板接上鍵盤或碰一下觸控板時視角不會瞬間跳動。 */
   fovFor(w, h) {
     const base = this._baseFov;
-    if (!this.touch || !(w > 0 && h > 0)) return base;
+    if (!(this.touch || this.ctx.input?.everTouch) || !(w > 0 && h > 0)) return base;
     const aspect = w / h;
     const tanH = Math.tan((PORTRAIT_MIN_HFOV * Math.PI) / 360);
     const v = (2 * Math.atan(tanH / aspect) * 180) / Math.PI;
