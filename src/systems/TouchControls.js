@@ -5,7 +5,8 @@
 //   弧度/像素 = 1.25 × 垂直視角（直向時用橫向的基本視角）÷ 視窗短邊 × 設定的靈敏度；直接套用、沒有慣性、沒有吸附；
 //   俯仰限制與滑鼠相同（PlayerController.lookBy）。單一事件位移超過視窗長邊 30% 時視為重新起點（不轉動）。
 // * 移動：浮動虛擬搖桿——拇指落在左側區域（橫向：左 40%；直向：左半、下半）時在落點出現；類比、死區 20%；
-//   手指拉超過 1.5 倍半徑時底座跟著滑過去。只有玩家能移動時才會出現（PlayerController.canMove()：
+//   手指拉超過 1.5 倍半徑時底座跟著滑過去。按在可互動物件上（例如坐著時的 CAM-01）時先當作點擊（容差 16 px），
+//   明確拖動超過 16 px 才變成搖桿（避免稍微滑動的點擊讓玩家站起來）。只有玩家能移動時才會出現（PlayerController.canMove()：
 //   劇情過場、檢視、暫停時不出現，該區域的觸控改為環顧）；坐著時推動搖桿＝按下移動鍵（平滑站起後才走）。
 //   能移動時左下角有一個很淡的提示圈。多點觸控：搖桿＋環顧可同時進行。
 // * 互動：短按（< 0.45 秒（事件時間戳）、位移 < 10 px）＝點擊 → Interaction.tapAt（點到的可互動物件；含容錯環）；
@@ -281,6 +282,10 @@ export class TouchControls {
   _assignRole(p, id, x, y) {
     p.role = 'tap';
     if (!this.stick && !this.ctx.inspect?.isOpen && this._canMove() && this._stickZone(x, y)) {
+      // 搖桿區裡按在可互動物件上（例如坐著時的 CAM-01 按鈕）：先當作點擊；明確拖動（> 1.6 × 點擊容差）才變成搖桿
+      let onItem = false;
+      try { onItem = !!this.ctx.interact?.pickAt?.(x, y); } catch (err) { /* ignore */ }
+      if (onItem) { p.role = 'tapStick'; return; }
       p.role = 'stick';
       this.stick = { id, cx: x, cy: y, kx: 0, ky: 0 };
       this._paintStick();
@@ -305,6 +310,13 @@ export class TouchControls {
     const dx = x - p.x, dy = y - p.y;
     p.x = x; p.y = y;
     p.moved = Math.max(p.moved, Math.hypot(x - p.x0, y - p.y0));
+    if (p.role === 'tapStick') {         // 按在物件上：拖動夠遠才啟動搖桿（底座在按下的位置）
+      if (p.moved <= TAP_SLOP * 1.6) return;
+      if (this.stick || !this._canMove()) { p.role = 'tap'; return; }
+      p.role = 'stick';
+      this.stick = { id: e.pointerId, cx: p.x0, cy: p.y0, kx: 0, ky: 0 };
+      this.stickEl.classList.add('is-on');
+    }
     // 保險：單一事件的位移大於視窗長邊的 30%（座標跳動、旋轉螢幕時手指沒放開）→ 視為重新起點，不轉動視角
     if (Math.abs(dx) > this._jumpPx() || Math.abs(dy) > this._jumpPx()) {
       if (p.role === 'stick' && this.stick?.id === e.pointerId) { this.stick.cx = x; this.stick.cy = y; this.stick.kx = 0; this.stick.ky = 0; this._paintStick(); }
@@ -341,7 +353,8 @@ export class TouchControls {
     if (this.lookId === e.pointerId) this.lookId = null;
     // 'pending'（鎖定中按下、沒有 move）：pointerup 的座標已經正確
     const tx = p.role === 'pending' ? e.clientX : p.x, ty = p.role === 'pending' ? e.clientY : p.y;
-    if (ok && p.moved < TAP_SLOP && evTime(e) - p.t0 < this._tapMs) this._tap(tx, ty, e);
+    const slop = p.role === 'tapStick' ? TAP_SLOP * 1.6 : TAP_SLOP;   // 搖桿區裡按在物件上：容差放寬到 16 px
+    if (ok && p.moved < slop && evTime(e) - p.t0 < this._tapMs) this._tap(tx, ty, e);
   }
 
   _jumpPx() { return 0.3 * Math.max(window.innerWidth || 800, window.innerHeight || 600); }
