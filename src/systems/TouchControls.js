@@ -194,7 +194,14 @@ export class TouchControls {
     });
     ctx.bus.on('game:paused', () => this._releaseAll());
     ctx.bus.on('inspect:open', () => this._releaseStick());
-    ctx.bus.on('resize', () => this._layoutStick());
+    // 旋轉螢幕／視窗大幅改變：手指還按著的話，舊座標已經沒有意義 → 放開所有觸控（避免視角在一幀內跳動、搖桿中心錯位）
+    this._lastSize = { w: window.innerWidth, h: window.innerHeight };
+    ctx.bus.on('resize', () => {
+      const w = window.innerWidth, h = window.innerHeight, L = this._lastSize;
+      if ((w >= h) !== (L.w >= L.h) || Math.abs(w - L.w) > 0.2 * L.w || Math.abs(h - L.h) > 0.2 * L.h) this._releaseAll();
+      this._lastSize = { w, h };
+      this._layoutStick();
+    });
     window.addEventListener('blur', () => this._releaseAll());
   }
 
