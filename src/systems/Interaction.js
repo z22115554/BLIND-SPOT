@@ -16,7 +16,8 @@
 // * 額外成員：currentItem、currentHit { distance, point }、isBlocked()
 // * 觸控（TouchControls）：tapAt(clientX, clientY) 從點擊位置發射射線（含 ±12／24 px 的容錯環），
 //   命中可互動物件（距離 ≤ 該物件的互動距離；目前的準心目標再放寬 0.5 m）就觸發；useCurrent() 觸發準心目標
-//   （底部提示按鈕）。兩者都走同一套防連點／阻擋規則。
+//   （底部提示按鈕）。兩者都走同一套防連點／阻擋規則。點到 8 m 內、但超出互動距離的物件：只淡入提示「再走近一點」。
+//   pickAt(clientX, clientY) 只查詢不觸發（TouchControls 用來判斷搖桿區裡的按壓是不是要點按鈕）。
 // =============================================================================
 import * as THREE from 'three';
 import { raycastTree, sortHits, visibleInHierarchy, attachedToScene, roomWallBlocks } from './raycastUtil.js';
@@ -27,6 +28,7 @@ const AFTER_CLOSE_MS = 300;
 const CLICK_SLOP_PX = 5;
 const TARGET_GRACE = 0.12;
 const TAP_SLACK = 0.5;         // 觸控點到「目前的準心目標」時，互動距離放寬（m）
+const TAP_FAR = 8;            // 觸控點到超出互動距離的物件：8 m 內給「再走近一點」的回饋
 // 觸控點擊的容錯取樣（CSS px）：先試正中央，再試 12 px 環（6 點）、24 px 環（8 點）
 const TAP_RINGS = [[[0, 0]],
   Array.from({ length: 6 }, (_, i) => [Math.cos(i * Math.PI / 3) * 12, Math.sin(i * Math.PI / 3) * 12]),
@@ -110,19 +112,33 @@ export class Interaction {
   useCurrent() { return this._use(); }
 
   /** 觸控：在螢幕座標 (clientX, clientY) 點擊。命中可互動物件就觸發。@returns {boolean} */
-  tapAt(clientX, clientY) {
-    if (this.isBlocked()) return false;
+  /** 觸控點（CSS px）底下的可互動物件（含容錯環；不觸發）。far：改用這個互動距離（m）做「看得到但太遠」的判斷。 */
+  pickAt(clientX, clientY, far = null) {
+    if (this.isBlocked()) return null;
     const W = window.innerWidth || 1, H = window.innerHeight || 1;
     const ndc = this._tapNdc || (this._tapNdc = new THREE.Vector2());
     for (const ring of TAP_RINGS) {
       let best = null;
       for (const [ox, oy] of ring) {
         ndc.set(((clientX + ox) / W) * 2 - 1, -((clientY + oy) / H) * 2 + 1);
-        const p = this._pick(ndc, TAP_SLACK);
+        const p = this._pick(ndc, TAP_SLACK, far);
         if (p && (!best || p.hit.distance < best.hit.distance)) best = p;
       }
-      if (best) return this._use(best.item.id);
+      if (best) return best;
     }
+    return null;
+  }
+
+  tapAt(clientX, clientY) {
+    if (this.isBlocked()) return false;
+    const best = this.pickAt(clientX, clientY);
+    if (best) return this._use(best.item.id);
+    // 點到看得到、但不在互動距離內的物件：淡入一句「再走近一點」（不觸發；已有提示時不覆蓋）
+    try {
+      const farPick = this.pickAt(clientX, clientY, TAP_FAR);
+      const text = this.ctx.SCRIPT?.touch?.hints?.tooFar;
+      if (farPick && text && !this.ctx.ui?.hintVisible?.()) this.ctx.ui?.hint?.(text, 1.6);
+    } catch (e) { /* 只是回饋 */ }
     return false;
   }
 
@@ -178,14 +194,15 @@ export class Interaction {
   }
 
   /** ndc：射線方向（預設＝畫面中央準心）；slack：目前目標的互動距離放寬量（觸控點擊用）。 */
-  _pick(ndc = CENTER, slack = 0) {
+  _pick(ndc = CENTER, slack = 0, far = null) {
     const ctx = this.ctx;
     const cam = ctx.camera;
     if (!cam || this.items.size === 0) return null;
     cam.updateMatrixWorld();
     const rc = this.raycaster;
     rc.setFromCamera(ndc, cam);
-    const reach = (it) => (Number.isFinite(it.distance) ? it.distance : 2.3) + (slack && it.id === this.current ? slack : 0);
+    const reach = far != null ? () => far
+      : (it) => (Number.isFinite(it.distance) ? it.distance : 2.3) + (slack && it.id === this.current ? slack : 0);
     const hits = this._hits; hits.length = 0;
     for (const it of this.items.values()) {
       const obj = it.object;

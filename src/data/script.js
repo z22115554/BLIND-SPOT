@@ -304,6 +304,7 @@ export const SCRIPT = {
       pointerLockFallback: '拖曳畫面環顧四周',
       closeInspect: '點 ✕ 或畫面空白處關閉',
       scrollInspect: '上下滑動',
+      tooFar: '再走近一點',                // 點到看得到但太遠的物件（final 修正新增）
     },
   },
 };
