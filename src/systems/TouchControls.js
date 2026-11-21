@@ -248,6 +248,7 @@ export class TouchControls {
 
   _onDown(e) {
     if (e.pointerType === 'mouse') return;
+    if (e.pointerType === 'pen' && !this.touch) return;   // 桌機的筆＝滑鼠（PlayerController 透過相容滑鼠事件處理）
     if (e.cancelable) e.preventDefault();
     try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch (err) { /* ignore */ }
     const x = e.clientX, y = e.clientY;
