@@ -9,6 +9,8 @@
 //   node scripts/pacing-sim.mjs [--runs 200] [--persona all|eager|typical|starer|passive] [--table] [--seed N]
 //                               [--spm 17] [--no-early] [--no-lock] [--no-subposes] [--quiet]
 //                               [--dmin 11] [--calm 3.5] [--gap 11] [--literal-rush]   （調整旋鈕；不套用長度斷言）
+//                               [--glance 0.7]   按 CAM 按鈕前低頭看控制台的秒數（滑鼠必須把準心移到按鈕上：
+//                                                 控制台在 CRT 下方約 33°，超出 GazeSystem 的 34° 視錐 → 算「移開視線」）
 // 斷言失敗時 exit 1。
 // =============================================================================
 import { MonitoringDirector, PACE, GATE_LIMITS, mulberry32 } from '../src/states/monitoringDirector.js';
@@ -31,6 +33,7 @@ const LOCK_DUR = 2.4;                               // cr.setBlastLocked(true, {
 const LEVER_DUR = 0.77, VENT_SETTLE = 0.6;          // pullVentLever + wait(0.6)
 // 與防爆門的水平距離（m）：座位 / 西牆（對講機、門）/ 東牆（通風面板）/ 走動中
 const DOOR_DIST = { seat: 4.18, west: 1.5, east: 7.9, walk: 3.0 };
+const GLANCE = Number(opt('glance', 0.7));
 
 // 玩家原型（秒）：react 看到警示後的反應、look 確認後多看幾秒、walk 走到牆邊、ans 響鈴後多久接、
 // sweep 平常每 5 秒主動切看別的頻道的機率、ignore 不理會警示（1 = 永遠只看 CAM-03）
@@ -82,7 +85,7 @@ export function simulate(personaName = 'typical', seed = 1, o = {}) {
   const sense = () => ({
     held: held(), inspectOpen: false, ventStopped: w.f.ventStopped, clockText: w.clockText,
     channel: w.channel, shownChannel: w.shown, observed, unobserved3: w.unobsT, seenSinceMove: w.seenSinceMove,
-    anyAlert: w.alerts.size > 0, alerted: (n) => w.alerts.has(n), playerDoorDist: DOOR_DIST[w.pos],
+    anyAlert: w.alerts.size > 0, alerted: (n) => w.alerts.has(n), playerDoorDist: DOOR_DIST[w.pos], atDesk: w.pos === 'seat',
   });
   let cued = 0, cam3Alarms = 0, lastCuedAt = -Infinity, toneCount = 0, knocks = 0, knockMinute = null, subCount = 0;
   let kPrev = -1, kMinute = -1;
@@ -227,8 +230,14 @@ export function simulate(personaName = 'typical', seed = 1, o = {}) {
       }
       if (k === 'act') { task.done(); startWalk('seat'); return; }
       if (k === 'waitCall') { if (w.f.intercomTalking || w.f.intercomRinging) { task.until = w.t + DT; return; } startWalk('seat'); return; }
-      if (k === 'react') { w.channel = task.ch; w.shown = task.ch; task = { kind: 'look', until: w.t + PACE.ACK + U(P.look) }; return; }
-      if (k === 'look') { w.channel = 3; w.shown = 3; task = null; return; }
+      // 切頻道＝先低頭看控制台按鈕 GLANCE 秒（視線離開 CRT），按下後抬頭
+      if (k === 'react') { if (GLANCE > 0) { w.view = 'console'; task = { kind: 'press', ch: task.ch, until: w.t + GLANCE }; return; } task = { kind: 'press', ch: task.ch, until: w.t }; }
+      if (task.kind === 'press') {
+        w.view = 'crt'; w.channel = task.ch; w.shown = task.ch;
+        task = task.ch === 3 ? null : { kind: 'look', until: w.t + PACE.ACK + U(P.look) };
+        return;
+      }
+      if (k === 'look') { if (GLANCE > 0) { w.view = 'console'; task = { kind: 'press', ch: 3, until: w.t + GLANCE }; return; } w.channel = 3; w.shown = 3; task = null; return; }
     }
     // 沒有任務：閘門優先，其次是警示，再其次是偶爾主動看看別的頻道
     const g = gateAction();
