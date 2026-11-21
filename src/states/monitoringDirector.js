@@ -446,7 +446,11 @@ export class MonitoringDirector {
       this._startKnock(s, now, this.obs3 < K.watch);
     } else if (kn.state === 'playing') {
       if (kn.step === 1 && now >= kn.at + K.second) {
+        // 檢視／hold 中不敲（§3.6、§8）：最多延後 1 秒，之後就略過第二組
+        const busy = s.held || s.inspectOpen;
+        if (busy && now < kn.at + K.second + 1.0) return;
         kn.step = 2;
+        if (busy) { this._t('knockQuiet', { reason: s.held ? 'held' : 'inspect' }); return; }
         // 玩家已經走到門邊就不再敲（絕不在 2.5 m 內出聲）
         if ((s.playerDoorDist ?? Infinity) >= K.minDoorDist) {
           this.io.knock?.(2, 0.8);
