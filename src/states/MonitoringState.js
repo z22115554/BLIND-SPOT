@@ -28,6 +28,7 @@
 // =============================================================================
 import { STATES } from '../core/StateMachine.js';
 import { clamp, lerp } from '../core/util.js';
+import { SPAWN } from '../data/layout.js';
 import {
   StoryState, T, AMB, applyPreset, setClock, clockAt, minuteOf, setLeftLog, setRight, setObjective, setLimits,
   ringIntercom, playIntercom, points, paceFlags, pushLog, lockBlastDoorNow,
@@ -284,6 +285,7 @@ export class MonitoringState extends StoryState {
 
   sense() {
     const ctx = this.ctx, f = ctx.flags, fd = ctx.feeds, pos = ctx.player?.position, door = points(ctx).blastDoor;
+    const seat = SPAWN.seated;
     const observed = (n) => !!fd?.isChannelObserved?.(n);
     const alerted = (n) => !!fd?.isAlerted?.(n);
     return {
@@ -299,6 +301,7 @@ export class MonitoringState extends StoryState {
       anyAlert: alerted(1) || alerted(2) || alerted(3) || alerted(4),
       alerted,
       playerDoorDist: pos ? Math.hypot(pos.x - door.x, pos.z - door.z) : Infinity,
+      atDesk: !!ctx.player?.seated || (pos ? Math.hypot(pos.x - seat.x, pos.z - seat.z) < 1.2 : true),
     };
   }
 

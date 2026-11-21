@@ -16,7 +16,8 @@
 //   onFigureMoved({ index, sub }, now) / onAlertAck({ channel }, now) / fastForward(start)
 //   fire(id) / forceFlip() / dump() / get trace
 // sense() → { held, inspectOpen, ventStopped, clockText, channel, shownChannel, observed(n), unobserved3,
-//             seenSinceMove, anyAlert, alerted(n), playerDoorDist }
+//             seenSinceMove, anyAlert, alerted(n), playerDoorDist, atDesk }
+//   atDesk：玩家坐著或站在座位旁（CAM-03 顯示中、玩家只是低頭按按鈕時，人影的變化就在畫面上，不另外發 CAM-03 警示）
 // io      → apply(ch, stage, { force }) → bool, freeze(ch, { force }), raise(ch, { stamp }) → stamp, clockStamp(),
 //           firstStamp(), tone(ch), knock(count, amp), knocked(), log(kind, { ch, hhmm }), minuteK(k), hint(), trace(entry)
 //   io.log 的 kind：'motion' | 'knock' | 'lock' | 'vent'（後兩者只在 fastForward 補寫 SYS LOG 時使用）。
@@ -27,6 +28,7 @@
 export const PACE = {
   SPM: 17,          // = CLOCK.secondsPerMinute = DWELL_MAX（ctor 的 spm 可覆寫；?spm=N）
   DWELL_MIN: 11,    // 最早翻分鐘：自該分鐘 beatDoneAt 起算（非保護分鐘）
+  DWELL0: 3,        // 02:00 上鎖閘門完成後最早翻分鐘（OSD 秒數通常早已停在 :59；不受 POST_HOLD 限制，m4a 仍受）
   CALM: 3.5,        // 距離上一個 mark 至少這麼多秒才可以提早翻
   RUSH: 1.0,        // 提早翻：OSD 秒數在這段時間內跑到 :59，然後翻
   RUSH_IN_DWELL: true, // true：衝刺可在 DWELL_MIN − RUSH 開始，翻分鐘最早正好落在 DWELL_MIN（＝「最早 11 秒翻」）；
@@ -164,9 +166,13 @@ export class MonitoringDirector {
     if (e >= P.SPM) return true;                          // 最長 = 今天的行為
     if (this.rushT0 != null) return now - this.rushT0 >= P.RUSH;
     if (!this.early || this.protectedMinutes.has(this.minute) || this.minute >= 13) return false;
-    if (e < P.DWELL_MIN - (P.RUSH_IN_DWELL ? P.RUSH : 0)) return false;
+    // 02:00（上鎖閘門）：鎖好之後很快就翻到 02:01（玩家已經在這一分鐘裡走過去上鎖；OSD 秒數多半早已停在 :59）
+    const m0 = this.minute === 0 && this.gates.has(0);
+    if (e < (m0 ? P.DWELL0 : P.DWELL_MIN) - (P.RUSH_IN_DWELL ? P.RUSH : 0)) return false;
     const s = this.sense();
-    if (s.held || s.inspectOpen || now < this.holdUntil || s.anyAlert) return false;
+    // CAM-03 的警示只是回報（不需要玩家處理）：不擋提早翻分鐘
+    const anyCue = typeof s.alerted === 'function' ? !!(s.alerted(1) || s.alerted(2) || s.alerted(4)) : !!s.anyAlert;
+    if (s.held || s.inspectOpen || (!m0 && now < this.holdUntil) || anyCue) return false;
     if (now - this.lastMark < P.CALM) return false;
     if (this._minutePending(s)) return false;
     this.rushT0 = now;
@@ -213,6 +219,9 @@ export class MonitoringDirector {
     this._t('figure', { ch: 3, index, sub: !!sub });
     const s = this.sense();
     if (s.observed?.(3) || s.ventStopped) return;
+    // CAM-03 正顯示在主螢幕、玩家人在座位（只是低頭按 CAM 按鈕、看一眼時鐘或側螢幕）：變化就在畫面上等他回來看，
+    // 不另外發警示（否則每次查看別的頻道之後幾秒都會固定跳出「▲ CAM-03」，變成機械式的規律）
+    if (this._shown(s, 3) && s.atDesk !== false) { this._t('cam3Skip', { ch: 3, reason: 'onScreen' }); return; }
     const [a, b] = this.P.CAM3_LAT;
     this.cam3 = { due: now + a + (b - a) * this.rng(), stamp: this.io.clockStamp?.() ?? null, index, sub: !!sub };
   }
@@ -446,7 +455,11 @@ export class MonitoringDirector {
       this._startKnock(s, now, this.obs3 < K.watch);
     } else if (kn.state === 'playing') {
       if (kn.step === 1 && now >= kn.at + K.second) {
+        // 檢視／hold 中不敲（§3.6、§8）：最多延後 1 秒，之後就略過第二組
+        const busy = s.held || s.inspectOpen;
+        if (busy && now < kn.at + K.second + 1.0) return;
         kn.step = 2;
+        if (busy) { this._t('knockQuiet', { reason: s.held ? 'held' : 'inspect' }); return; }
         // 玩家已經走到門邊就不再敲（絕不在 2.5 m 內出聲）
         if ((s.playerDoorDist ?? Infinity) >= K.minDoorDist) {
           this.io.knock?.(2, 0.8);

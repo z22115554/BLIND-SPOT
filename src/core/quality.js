@@ -12,6 +12,7 @@
 //   feedSamples       監視器畫面 render target 的 MSAA（桌機 4 → 手機 0；CCTV 畫面本來就有雜訊與低畫質處理）。
 //   feedScale         監視器 render target 尺寸倍率（640×480 → 480×360；CRT 著色器仍以 640×480 的網格取樣）。
 //   ashCount / dustCount / smokeCount   粒子上限：車道灰燼 800 → 480、廊道浮塵 320 → 200、終幕濃煙 52 → 40。
+//   osdBig            監視器疊字的動態偵測標籤／警示列／狀態標籤放大約 1.3 倍（19 → 25 px）。
 // applyQuality(ctx) 在所有模組 init 之後、shader 預先編譯之前呼叫（只做建構後的調整，不改其他模組的原始碼）。
 // =============================================================================
 import * as THREE from 'three';
@@ -33,6 +34,7 @@ export function detectQuality(params) {
     ashCount: 480,
     dustCount: 200,
     smokeCount: 40,
+    osdBig: true,
   };
 }
 
@@ -59,6 +61,14 @@ export function applyQuality(ctx) {
       if (q.feedScale && q.feedScale < 1) rt.setSize(Math.round(rt.width * q.feedScale), Math.round(rt.height * q.feedScale));
       rt.dispose();
     }
+  });
+
+  // 監視器疊字：動態偵測標籤／警示列／狀態標籤放大（手機上 CRT 只有約 210 CSS px 寬）
+  step('osdText', () => {
+    const osd = ctx.feeds?.osd;
+    if (!osd || !q.osdBig) return false;
+    osd.big = true;
+    osd.layers?.forEach?.((l) => { l.key = ''; });
   });
 
   // 陰影貼圖上限

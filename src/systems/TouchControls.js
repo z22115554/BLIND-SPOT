@@ -2,19 +2,24 @@
 // TouchControls — 手機／平板的觸控操作（只在觸控模式 ctx.input.touch 時作用；桌機完全不受影響）
 // -----------------------------------------------------------------------------
 // * 環顧：在畫面上（不是介面元件的地方）拖曳，方向同滑鼠（手指往右＝轉向右，行動 FPS 慣例）。
-//   弧度/像素 = 1.25 × 垂直視角 ÷ 視窗高度（橫向與直向手感一致）× 設定的靈敏度；直接套用、沒有慣性、沒有吸附；俯仰限制與滑鼠相同（PlayerController.lookBy）。
+//   弧度/像素 = 1.25 × 垂直視角（直向時用橫向的基本視角）÷ 視窗短邊 × 設定的靈敏度；直接套用、沒有慣性、沒有吸附；
+//   俯仰限制與滑鼠相同（PlayerController.lookBy）。單一事件位移超過視窗長邊 30% 時視為重新起點（不轉動）。
 // * 移動：浮動虛擬搖桿——拇指落在左側區域（橫向：左 40%；直向：左半、下半）時在落點出現；類比、死區 20%；
-//   手指拉超過 1.5 倍半徑時底座跟著滑過去。只有玩家能移動時才會出現（PlayerController.canMove()：
+//   手指拉超過 1.5 倍半徑時底座跟著滑過去。按在可互動物件上（例如坐著時的 CAM-01）時先當作點擊（容差 16 px），
+//   明確拖動超過 16 px 才變成搖桿（避免稍微滑動的點擊讓玩家站起來）。只有玩家能移動時才會出現（PlayerController.canMove()：
 //   劇情過場、檢視、暫停時不出現，該區域的觸控改為環顧）；坐著時推動搖桿＝按下移動鍵（平滑站起後才走）。
 //   能移動時左下角有一個很淡的提示圈。多點觸控：搖桿＋環顧可同時進行。
 // * 互動：短按（< 0.45 秒（事件時間戳）、位移 < 10 px）＝點擊 → Interaction.tapAt（點到的可互動物件；含容錯環）；
 //   拖曳永遠不會觸發互動。底部互動提示本身是按鈕（UI.js）。
 // * 檢視畫面開啟時：拖曳＝旋轉物件（InspectView.nudge）、在面板外點一下＝關閉；面板內文以手指捲動；✕ 關閉鈕。
-// * 暫停鈕：右上角（安全區內）44 px 觸控範圍，開啟既有的暫停/設定畫面。標題、結局選擇、名單、暫停中不顯示。
+// * 暫停鈕：右上角（安全區內）44 px 觸控範圍，開啟既有的暫停/設定畫面。標題、結局選擇、名單、暫停中、檢視中不顯示。
 // * 開始遊戲時（標題的點擊手勢內）嘗試全螢幕＋鎖定橫向（Android Chrome）；不支援（iPhone）時安靜略過。
 // * 直向：fovFor() 放寬垂直視角（最多 100°），讓水平視角至少約 62°，控制台與 CRT 仍完整可見（不拉伸）。
 // * 瀏覽器衛生：觸控模式下畫布 touch-action:none、阻止相容滑鼠事件、長按選單、iOS 雙指縮放（gesturestart）、
 //   頁面回彈（只允許標題/暫停/檢視內文等可捲動區域捲動）；所有 HUD 依 env(safe-area-inset-*) 內縮。
+// * 湊近看（只有觸控）：點一下監視器（主 CRT 或左右系統螢幕；沒有點到可互動物件時）→ 0.8 秒平滑轉向該螢幕並把垂直視角
+//   收窄到 38°（直向：水平視角至少 46°）。手機上 CRT 只有約 210 px 寬，疊字與琥珀燈太小；湊近後約放大 2 倍。
+//   再點一下畫面（不是按鈕）、拖曳環顧、推搖桿、開啟檢視、暫停、切換狀態或輸入方式 → 0.8 秒平滑退回。
 // * 沒有震動回饋（震動＝驚嚇）。所有出現/消失都是 ≥ 0.4 秒的淡入淡出。
 // =============================================================================
 import { injectStyle, uiRoot, el } from './uiCommon.js';
@@ -26,6 +31,10 @@ const STICK_DEAD = 0.2;
 const STICK_FOLLOW = 1.5;     // 手指超過半徑的倍數時底座跟著移動
 const PORTRAIT_MIN_HFOV = 62; // 度
 const PORTRAIT_MAX_VFOV = 100;
+const LEAN_VFOV = 38;         // 湊近看：目標垂直視角（度）
+const LEAN_MIN_HFOV = 46;     // 湊近看：水平視角至少這麼寬（直向時 CRT 整個寬度（約 42°）仍在畫面內）
+const LEAN_S = 0.8;           // 湊近／退回的時間（秒；畫面亮度變化緩慢）
+const LEAN_REACH = 3.2;       // m：只有這個距離內的監視器可以湊近
 const evTime = (e) => { const t = Number(e?.timeStamp); return t > 0 && t < performance.now() + 1000 ? t : performance.now(); };
 const SCROLLERS = '.bs-title, .bs-pause, .bs-insp__body, .bs-end, .bs-error, input, label';
 
@@ -48,10 +57,15 @@ html.bs-touch .bs-controls--touch { display: flex; }
 /* ---------- 觸控模式：安全區＋HUD 版面 ---------- */
 html.bs-touch .bs-obj { left: calc(max(1.4em, 3.2vw) + env(safe-area-inset-left, 0px)); top: calc(max(1.3em, 4.4vh) + env(safe-area-inset-top, 0px));
   width: min(24em, 46vw); }
-html.bs-touch .bs-hint { top: calc(max(1.4em, 6.2vh) + env(safe-area-inset-top, 0px)); max-width: min(30em, 62vw); }
+html.bs-touch .bs-hint { top: calc(max(1.4em, 6.2vh) + env(safe-area-inset-top, 0px)); max-width: min(30em, 62vw); text-wrap: balance; }
 @media (max-width: 640px) {   /* 直向窄螢幕：提示放在左上目標的下方（與桌機窄視窗相同的位置＋安全區） */
   html.bs-touch .bs-hint { top: calc(max(1.3em, 4.4vh) + 5.4em + env(safe-area-inset-top, 0px)); max-width: 90vw; }
   html.bs-touch .bs-obj { width: min(24em, 70vw); }
+}
+/* 橫向手機（寬 ≤ 960）：置中的提示會壓到左上的目標文字 → 同樣放在目標下方、靠左對齊（避開瀏海安全區） */
+@media (max-width: 960px) and (min-aspect-ratio: 1/1) {
+  html.bs-touch .bs-hint { left: calc(max(1.4em, 3.2vw) + env(safe-area-inset-left, 0px)); transform: none; text-align: left;
+    top: calc(max(1.3em, 4.4vh) + 5.2em + env(safe-area-inset-top, 0px)); max-width: min(30em, 60vw); padding-left: 0; }
 }
 html.bs-touch .bs-prompt { bottom: calc(max(1.2em, 4vh) + env(safe-area-inset-bottom, 0px));
   max-width: min(40em, calc(100vw - 2.4em - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
@@ -59,9 +73,16 @@ html.bs-touch .bs-prompt { bottom: calc(max(1.2em, 4vh) + env(safe-area-inset-bo
   border: 1px solid rgba(217, 212, 199, 0.26); border-radius: 3px; background: rgba(4, 4, 4, 0.5);
   pointer-events: auto; cursor: pointer; transition: opacity 0.4s ease, border-color 0.4s ease; }
 html.bs-touch .bs-prompt:not(.is-on) { pointer-events: none; }
+/* 直向：互動提示鈕靠右下（左緣 ≥ 38vw，在搖桿提示圈（右緣約 33vw）的右邊；拇指稍微落低時不會按到提示鈕）；
+   字幕往上讓出兩行高的提示鈕 */
+@media (max-aspect-ratio: 1/1) {
+  html.bs-touch .bs-prompt { left: auto; right: calc(0.9em + env(safe-area-inset-right, 0px)); transform: none;
+    max-width: calc(62vw - 0.9em - env(safe-area-inset-right, 0px)); }
+}
 html.bs-touch .bs-prompt:active { border-color: var(--bs-amber-soft); }
 html.bs-touch .bs-prompt .bs-key { min-width: 3.4em; height: 2.2em; font-family: var(--bs-ui); letter-spacing: 0.18em; border-color: var(--bs-amber-soft); }
 html.bs-touch .bs-subs { bottom: calc(max(1.2em, 4vh) + 5em + env(safe-area-inset-bottom, 0px)); }
+@media (max-aspect-ratio: 1/1) { html.bs-touch .bs-subs { bottom: calc(max(1.2em, 4vh) + 6.6em + env(safe-area-inset-bottom, 0px)); } }
 html.bs-touch .bs-debug { top: calc(0.6em + env(safe-area-inset-top, 0px)); right: calc(4.2em + env(safe-area-inset-right, 0px)); }
 
 /* ---------- 觸控模式：標題、暫停、結局、檢視 ---------- */
@@ -132,6 +153,8 @@ export class TouchControls {
     this.lookId = null;
     this._baseFov = ctx.camera?.fov || 70;
     this._vis = { ghost: null, pause: null };
+    this._lean = { on: false, k: 0, state: null };
+    this._leanRay = null;
     // 測試用：?tapms=N 放寬點擊時間（SwiftShader 下每個觸控事件要等一幀才送達）
     this._tapMs = Number(ctx.params?.get?.('tapms')) || TAP_MS;
 
@@ -184,26 +207,84 @@ export class TouchControls {
     });
 
     ctx.bus.on('input:mode', ({ touch } = {}) => {
-      if (!touch) this._releaseAll();
+      if (!touch) { this._releaseAll(); this._leanOff(); }
       try { if (ctx.inspect?.isOpen) ctx.inspect.syncHints?.(); } catch (e) { /* ignore */ }
     });
     ctx.bus.on('game:paused', () => this._releaseAll());
-    ctx.bus.on('inspect:open', () => this._releaseStick());
-    ctx.bus.on('resize', () => this._layoutStick());
+    ctx.bus.on('inspect:open', () => { this._releaseStick(); this._leanOff(); });
+    // 旋轉螢幕／視窗大幅改變：手指還按著的話，舊座標已經沒有意義 → 放開所有觸控（避免視角在一幀內跳動、搖桿中心錯位）
+    this._lastSize = { w: window.innerWidth, h: window.innerHeight };
+    ctx.bus.on('resize', () => {
+      const w = window.innerWidth, h = window.innerHeight, L = this._lastSize;
+      if ((w >= h) !== (L.w >= L.h) || Math.abs(w - L.w) > 0.2 * L.w || Math.abs(h - L.h) > 0.2 * L.h) this._releaseAll();
+      this._lastSize = { w, h };
+      this._layoutStick();
+    });
     window.addEventListener('blur', () => this._releaseAll());
   }
 
   // ---------------------------------------------------------------------------
   // 視角（直向放寬 FOV）
   // ---------------------------------------------------------------------------
-  /** 主相機的垂直視角（度）。桌機/橫向＝原值；觸控直向放寬到水平視角 ≥ 62°（垂直最多 100°）。 */
+  /** 主相機的垂直視角（度）。桌機/橫向＝原值；觸控裝置直向放寬到水平視角 ≥ 62°（垂直最多 100°）。
+   *  依「這台裝置用過觸控」（everTouch）而不是目前的輸入方式：直向的平板接上鍵盤或碰一下觸控板時視角不會瞬間跳動。 */
   fovFor(w, h) {
     const base = this._baseFov;
-    if (!this.touch || !(w > 0 && h > 0)) return base;
+    if (!(this.touch || this.ctx.input?.everTouch) || !(w > 0 && h > 0)) return base;
     const aspect = w / h;
     const tanH = Math.tan((PORTRAIT_MIN_HFOV * Math.PI) / 360);
     const v = (2 * Math.atan(tanH / aspect) * 180) / Math.PI;
-    return Math.min(PORTRAIT_MAX_VFOV, Math.max(base, v));
+    const v0 = Math.min(PORTRAIT_MAX_VFOV, Math.max(base, v));
+    const k = this._lean.k;
+    if (!(k > 0)) return v0;
+    // 湊近看：收窄到 LEAN_VFOV（但水平視角至少 LEAN_MIN_HFOV）
+    const vMin = (2 * Math.atan(Math.tan((LEAN_MIN_HFOV * Math.PI) / 360) / aspect) * 180) / Math.PI;
+    const target = Math.min(v0, Math.max(LEAN_VFOV, vMin));
+    const e = k * k * (3 - 2 * k);
+    return v0 + (target - v0) * e;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 湊近看監視器
+  // ---------------------------------------------------------------------------
+  /** 點擊沒有用到可互動物件：已湊近 → 退回；點到監視器 → 湊近。回傳是否處理了這次點擊。 */
+  _leanTap(x, y) {
+    const ctx = this.ctx;
+    if (this._lean.on) { this._leanOff(); return true; }
+    if (!this.touch || ctx.inspect?.isOpen || ctx.clock?.paused || !ctx.player?.enabled || ctx.player?._lookTween) return false;
+    const objs = ctx.controlRoom?.objects;
+    const screens = [objs?.mainScreen, ...(objs?.sideScreens || [])].filter((o) => o && o.visible !== false);
+    const cam = ctx.camera, THREE = ctx.THREE;
+    if (!screens.length || !cam || !THREE) return false;
+    const rc = this._leanRay || (this._leanRay = new THREE.Raycaster());
+    const ndc = new THREE.Vector2((x / (window.innerWidth || 1)) * 2 - 1, -(y / (window.innerHeight || 1)) * 2 + 1);
+    cam.updateMatrixWorld();
+    rc.setFromCamera(ndc, cam);
+    rc.near = 0; rc.far = LEAN_REACH;
+    const hit = rc.intersectObjects(screens, false)[0];
+    if (!hit) return false;
+    const center = hit.object.getWorldPosition(new THREE.Vector3());
+    this._lean.on = true;
+    this._lean.state = ctx.fsm?.currentName ?? null;
+    try { ctx.player.lookAt?.(center, LEAN_S); } catch (e) { /* ignore */ }
+    return true;
+  }
+
+  _leanOff() { this._lean.on = false; }
+
+  /** 每幀：湊近的程度 0..1 以 LEAN_S 秒平滑移動；變化時更新主相機的視角。 */
+  _updateLean(dt) {
+    const ctx = this.ctx, L = this._lean;
+    if (L.on && (!this.touch || ctx.inspect?.isOpen || ctx.clock?.paused || !ctx.player?.enabled || this.stick
+      || (ctx.fsm?.currentName ?? null) !== L.state)) L.on = false;
+    const goal = L.on ? 1 : 0;
+    if (L.k === goal) return;
+    const step = Math.min(0.1, Math.max(0, Number(dt) || 0)) / LEAN_S;
+    L.k = goal > L.k ? Math.min(goal, L.k + step) : Math.max(goal, L.k - step);
+    const cam = ctx.camera;
+    if (!cam) return;
+    cam.fov = this.fovFor(window.innerWidth, window.innerHeight);
+    cam.updateProjectionMatrix();
   }
 
   // ---------------------------------------------------------------------------
@@ -243,21 +324,37 @@ export class TouchControls {
 
   _onDown(e) {
     if (e.pointerType === 'mouse') return;
+    if (e.pointerType === 'pen' && !this.touch) return;   // 桌機的筆＝滑鼠（PlayerController 透過相容滑鼠事件處理）
     if (e.cancelable) e.preventDefault();
     try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch (err) { /* ignore */ }
     const x = e.clientX, y = e.clientY;
     // 時間用事件的 timeStamp（主執行緒忙碌、事件晚一點才處理時，點擊仍然算點擊）
     const p = { role: 'tap', x0: x, y0: y, x, y, t0: evTime(e), moved: 0 };
+    // 混合裝置：滑鼠指標鎖定中第一次觸控 → 這個事件的座標是 (0,0)（瀏覽器在鎖定中凍結座標）。
+    // 先不決定角色，等第一個 move（指標已解除鎖定、座標正確）再以那個位置為起點；沒有 move 就以 pointerup 的位置點擊。
+    let locked = false;
+    try { locked = !!document.pointerLockElement || !!this.ctx.input?.downWhileLocked?.(e); } catch (err) { /* ignore */ }
+    if (locked) { p.role = 'pending'; this.ptrs.set(e.pointerId, p); return; }
+    this._assignRole(p, e.pointerId, x, y);
+    this.ptrs.set(e.pointerId, p);
+  }
+
+  /** 決定觸控點的角色：搖桿（左側區域、能移動時）／環顧（同時只有一個）／點擊。 */
+  _assignRole(p, id, x, y) {
+    p.role = 'tap';
     if (!this.stick && !this.ctx.inspect?.isOpen && this._canMove() && this._stickZone(x, y)) {
+      // 搖桿區裡按在可互動物件上（例如坐著時的 CAM-01 按鈕）：先當作點擊；明確拖動（> 1.6 × 點擊容差）才變成搖桿
+      let onItem = false;
+      try { onItem = !!this.ctx.interact?.pickAt?.(x, y); } catch (err) { /* ignore */ }
+      if (onItem) { p.role = 'tapStick'; return; }
       p.role = 'stick';
-      this.stick = { id: e.pointerId, cx: x, cy: y, kx: 0, ky: 0 };
+      this.stick = { id, cx: x, cy: y, kx: 0, ky: 0 };
       this._paintStick();
       this.stickEl.classList.add('is-on');
     } else if (this.lookId == null) {
       p.role = 'look';
-      this.lookId = e.pointerId;
+      this.lookId = id;
     }
-    this.ptrs.set(e.pointerId, p);
   }
 
   _onMove(e) {
@@ -265,12 +362,32 @@ export class TouchControls {
     if (!p) return;
     if (e.cancelable) e.preventDefault();
     const x = e.clientX, y = e.clientY;
+    if (p.role === 'pending') {          // 鎖定中按下的觸控：以第一個正確的座標為起點（這一次不環顧）
+      try { if (document.pointerLockElement) return; } catch (err) { /* ignore */ }
+      p.x0 = p.x = x; p.y0 = p.y = y;
+      this._assignRole(p, e.pointerId, x, y);
+      return;
+    }
     const dx = x - p.x, dy = y - p.y;
     p.x = x; p.y = y;
     p.moved = Math.max(p.moved, Math.hypot(x - p.x0, y - p.y0));
+    if (p.role === 'tapStick') {         // 按在物件上：拖動夠遠才啟動搖桿（底座在按下的位置）
+      if (p.moved <= TAP_SLOP * 1.6) return;
+      if (this.stick || !this._canMove()) { p.role = 'tap'; return; }
+      p.role = 'stick';
+      this.stick = { id: e.pointerId, cx: p.x0, cy: p.y0, kx: 0, ky: 0 };
+      this.stickEl.classList.add('is-on');
+    }
+    // 保險：單一事件的位移大於視窗長邊的 30%（座標跳動、旋轉螢幕時手指沒放開）→ 視為重新起點，不轉動視角
+    if (Math.abs(dx) > this._jumpPx() || Math.abs(dy) > this._jumpPx()) {
+      if (p.role === 'stick' && this.stick?.id === e.pointerId) { this.stick.cx = x; this.stick.cy = y; this.stick.kx = 0; this.stick.ky = 0; this._paintStick(); }
+      p.moved = Math.max(p.moved, TAP_SLOP);
+      return;
+    }
     if (p.role === 'look') {
       const ctx = this.ctx;
       if (ctx.inspect?.isOpen) { ctx.inspect.nudge?.(dx, dy); return; }
+      if (this._lean.on && p.moved >= TAP_SLOP) this._leanOff();   // 拖曳環顧＝退回
       const k = this._lookRadPerPx();
       ctx.player?.lookBy?.(dx * k, dy * k);
     } else if (p.role === 'stick' && this.stick?.id === e.pointerId) {
@@ -296,19 +413,27 @@ export class TouchControls {
     if (e.cancelable) e.preventDefault();
     if (p.role === 'stick') this._releaseStick();
     if (this.lookId === e.pointerId) this.lookId = null;
-    if (ok && p.moved < TAP_SLOP && evTime(e) - p.t0 < this._tapMs) this._tap(p.x, p.y, e);
+    // 'pending'（鎖定中按下、沒有 move）：pointerup 的座標已經正確
+    const tx = p.role === 'pending' ? e.clientX : p.x, ty = p.role === 'pending' ? e.clientY : p.y;
+    const slop = p.role === 'tapStick' ? TAP_SLOP * 1.6 : TAP_SLOP;   // 搖桿區裡按在物件上：容差放寬到 16 px
+    if (ok && p.moved < slop && evTime(e) - p.t0 < this._tapMs) this._tap(tx, ty, e);
   }
+
+  _jumpPx() { return 0.3 * Math.max(window.innerWidth || 800, window.innerHeight || 600); }
 
   _tap(x, y, e) {
     const ctx = this.ctx;
     if (ctx.clock?.paused) return;
     if (ctx.inspect?.isOpen) { ctx.inspect._requestClose?.(e); return; }   // 面板外點一下＝關閉（面板本身攔截自己的觸控）
-    try { ctx.interact?.tapAt?.(x, y); } catch (err) { console.warn('[touch] tap failed', err); }
+    let used = false;
+    try { used = !!ctx.interact?.tapAt?.(x, y); } catch (err) { console.warn('[touch] tap failed', err); }
+    if (!used) { try { this._leanTap(x, y); } catch (err) { console.warn('[touch] lean failed', err); } }
   }
 
   _lookRadPerPx() {
-    const fov = ((this.ctx.camera?.fov || 70) * Math.PI) / 180;
-    const h = Math.max(200, window.innerHeight || 600);
+    // 以視窗短邊與橫向的視角計算：直向（短邊＝寬、視角放寬到 ~100°）時不會變得太慢（iPhone SE 直向整個寬度 ≈ 88°），橫向不變
+    const fov = ((Math.min(this.ctx.camera?.fov || 70, this._baseFov || 70)) * Math.PI) / 180;
+    const h = Math.max(200, Math.min(window.innerWidth || 800, window.innerHeight || 600));
     const sens = Number(this.ctx.settings?.get?.('sensitivity'));
     return (LOOK_GAIN * fov / h) * (Number.isFinite(sens) && sens > 0 ? sens : 1);
   }
@@ -351,9 +476,10 @@ export class TouchControls {
   }
 
   // ---------------------------------------------------------------------------
-  update() {
+  update(dt) {
     const ctx = this.ctx;
     const touch = this.touch;
+    this._updateLean(dt);
     const canMove = touch && this._canMove();
     // 搖桿 → PlayerController.analog（類比：死區之外重新映射到 0..1）
     const a = ctx.player?.analog;
@@ -370,7 +496,9 @@ export class TouchControls {
     }
     const ghost = canMove && !this.stick;
     if (ghost !== this._vis.ghost) { this._vis.ghost = ghost; this.ghostEl.classList.toggle('is-on', ghost); }
-    const pause = touch && !!ctx.fsm && ctx.fsm.currentName !== ctx.STATES?.TITLE && !ctx.clock?.paused && !ctx.ui?.menuVisible?.();
+    // 檢視畫面開啟時也隱藏（側邊面板的 ✕ 與暫停鈕會緊貼在一起；先關閉檢視再暫停）
+    const pause = touch && !!ctx.fsm && ctx.fsm.currentName !== ctx.STATES?.TITLE && !ctx.clock?.paused && !ctx.ui?.menuVisible?.()
+      && !ctx.inspect?.isOpen;
     if (pause !== this._vis.pause) { this._vis.pause = pause; this.pauseEl.classList.toggle('is-on', pause); }
   }
 }

@@ -22,6 +22,8 @@ export class OSD {
       return { canvas, g, texture, key: '' };
     });
     this.cur = 0;
+    /** 手機畫質（ctx.quality.tier === 'mobile'）：動態偵測標籤、警示列與狀態標籤放大約 1.3 倍（CRT 在手機上只有約 210 px 寬） */
+    this.big = false;
     // REC 圓點位置（OSD uv，原點左下）
     this.rec = { u: 0, v: 0, r: 0 };
   }
@@ -74,11 +76,12 @@ export class OSD {
       this.rec = { u: dotX / W, v: 1 - dotY / H, r: 7.5 / H, on: !state.recOff };
       shadowText(state.time, W - mx, my + 30, { size: 21, align: 'right', weight: '' });
       // 動態偵測：被警示頻道的標籤（CAM id 下方）、其他被警示頻道的警示列（時間戳下方）
-      if (state.tag) shadowText(state.tag, mx, my + 30, { size: 19, font: FONTS.ui, weight: '' });
-      if (state.alarm) shadowText(state.alarm, W - mx, my + 58, { size: 18, align: 'right', weight: '' });
+      const B = this.big;
+      if (state.tag) shadowText(state.tag, mx, my + (B ? 36 : 30), { size: B ? 25 : 19, font: FONTS.ui, weight: '', maxW: W * 0.52 });
+      if (state.alarm) shadowText(state.alarm, W - mx, my + (B ? 64 : 58), { size: B ? 24 : 18, align: 'right', weight: '' });
       // 左下：狀態標籤
       const labelColor = state.hd ? (state.warn ? '#ffc27a' : '#f2f2ea') : '#f2f2ea';
-      shadowText(state.label, mx, H - my + 14, { size: 19, font: FONTS.ui, maxW: W - mx * 2, color: labelColor, weight: '' });
+      shadowText(state.label, mx, H - my + 14, { size: B ? 24 : 19, font: FONTS.ui, maxW: W - mx * 2, color: labelColor, weight: '' });
     } else if (state.kind === 'static') {
       shadowText(state.camId, mx, my, { size: 25 });
       // 中央：NO SIGNAL 方框

@@ -166,6 +166,7 @@ export class CameraFeeds {
     this._osdPrevOn = 0;
     this._clockText = null;
     this._clockAt = 0;
+    this._secFloor = 0;
     this._t = 0;
     this._light = { color: new THREE.Color(0, 0, 0), intensity: 0 };
     this._lightTarget = { color: new THREE.Color(), intensity: 0 };
@@ -335,6 +336,7 @@ export class CameraFeeds {
     this._frozen = {};
     this._tagShown = null;
     this.figureSub = false;
+    this._clockText = null; this._secFloor = 0;
     for (const c of CHS) { this._alertLvl[c] = 0; this._recK[c] = 1; }
     this._applyFigure();
     this.osd.swap();
@@ -501,7 +503,7 @@ export class CameraFeeds {
 
   _timestamp(t) {
     const text = this.ctx.flags?.clockText || this.ctx.CLOCK?.start || '02:00';
-    if (text !== this._clockText) { this._clockText = text; this._clockAt = t; this._kStale = true; }
+    if (text !== this._clockText) { this._clockText = text; this._clockAt = t; this._kStale = true; this._secFloor = 0; }
     const k = this.ctx.flags?.minuteK;
     let sec;
     if (Number.isFinite(k)) {
@@ -512,7 +514,11 @@ export class CameraFeeds {
       const spm = this.ctx.CLOCK?.secondsPerMinute || 17;
       sec = Math.floor(((t - this._clockAt) * 60) / spm);
     }
-    return `${text}:${String(clamp(sec, 0, 59)).padStart(2, '0')}`;
+    // 同一個時鐘分鐘內秒數永不倒退：序幕（舊算法）已經走到 :59 時，進入監看後 director 的 minute 0 從 k = 0 開始，
+    // 這裡守住下限 → OSD 停在 :59 直到 02:01（與 ?pace=0 相同），不會跳回 :00。
+    sec = Math.max(clamp(sec, 0, 59), this._secFloor || 0);
+    this._secFloor = sec;
+    return `${text}:${String(sec).padStart(2, '0')}`;
   }
   _feedUI() { return this.ctx.SCRIPT?.feedUI || FEED_UI_FALLBACK; }
 
